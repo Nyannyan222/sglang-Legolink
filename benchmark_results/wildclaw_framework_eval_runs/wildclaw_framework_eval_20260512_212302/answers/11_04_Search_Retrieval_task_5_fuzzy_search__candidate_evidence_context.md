@@ -1,3 +1,0 @@
-Dry run only. Prompt/context staged for framework execution.
-
-Prompt file: benchmark_results\wildclaw_framework_eval_runs\wildclaw_framework_eval_20260512_212302\prompts\11_04_Search_Retrieval_task_5_fuzzy_search__candidate_evidence_context.txt

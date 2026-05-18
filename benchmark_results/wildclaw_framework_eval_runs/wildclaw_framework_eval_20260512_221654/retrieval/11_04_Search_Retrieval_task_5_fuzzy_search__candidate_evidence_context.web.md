@@ -1,5 +1,0 @@
-The paper you're referring to is "Visual-RFT: Visual Reinforcement Fine-Tuning," authored by Ziyu Liu and colleagues, published on March 3, 2025. ([huggingface.co](https://huggingface.co/papers/2503.01785?utm_source=openai)) This work extends the DeepSeek-R1 reinforcement learning approach to visual perception tasks, introducing a novel framework for fine-tuning Large Vision-Language Models (LVLMs) using reinforcement learning with verifiable rewards.
-
-The associated GitHub repository, [Liuziyu77/Visual-RFT](https://github.com/Liuziyu77/Visual-RFT), has garnered over 2,300 stars, indicating significant interest and adoption within the community. ([sourcepulse.org](https://www.sourcepulse.org/projects/1843051?utm_source=openai))
-
-This repository provides the implementation of the Visual-RFT framework, offering resources for researchers and developers aiming to enhance LVLM performance on various visual perception tasks.

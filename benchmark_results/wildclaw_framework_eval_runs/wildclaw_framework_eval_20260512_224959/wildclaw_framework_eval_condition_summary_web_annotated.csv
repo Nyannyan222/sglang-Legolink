@@ -1,5 +1,0 @@
-condition,rows,avg_correctness,avg_evidence_usefulness,avg_context_reduction,avg_prompt_tokens,avg_completion_tokens,avg_latency_s
-candidate_evidence_context,1,1.0,5.0,-0.072,2766.0,939.0,19.55
-file_based_chunks,1,1.0,5.0,0.054,2681.0,579.0,11.53
-fixed_size_chunks,1,1.0,5.0,-0.157,2647.0,549.0,12.684
-v3_semantic_final_pass,1,1.0,5.0,-0.085,2647.0,544.0,13.734
