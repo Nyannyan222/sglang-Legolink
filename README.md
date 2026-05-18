@@ -44,6 +44,13 @@ safe reuse eligibility.
   Lexical overlap is only a prefilter; embeddings and optional LLM judging
   provide the semantic signal when `OPENAI_API_KEY` is available.
 
+- `scripts/prepare_field_function_subcontexts.py`
+  Builds field/function-first sub-contexts from WildClaw/OpenClaw context
+  fields such as user prompt, tool definitions, tool history output,
+  conversation history, workspace evidence, and task metadata. Overlong fields
+  are split internally, and each row carries SGLang-oriented metadata for
+  independent prefill/cache/reuse.
+
 - `scripts/select_wildclaw_similarity_tasks.py`
   Ranks WildClawBench tasks/workspaces by how likely they are to contain
   repeated or near-repeated real-context evidence.
@@ -96,6 +103,10 @@ safe reuse eligibility.
 - `docs/semantic_subcontext_similarity_discovery.md`
   Current method for finding semantically similar WildClawBench sub-context
   pairs/groups.
+
+- `docs/field_function_semantic_subcontexts.md`
+  Design notes for splitting context by field/function first and targeting
+  SGLang sub-context blocks with no pairwise attention.
 
 - `docs/wildclaw_similarity_task_selector.md`
   Usage notes and current selector result for choosing better WildClawBench
