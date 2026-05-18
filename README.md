@@ -51,6 +51,11 @@ safe reuse eligibility.
   are split internally, and each row carries SGLang-oriented metadata for
   independent prefill/cache/reuse.
 
+- `scripts/run_block_isolated_subcontext_prototype.py`
+  Runs a runtime-facing prototype where each field/function sub-context is an
+  independent prefill/cache unit and the simulated attention contract allows
+  zero pairwise attention edges between different sub-context blocks.
+
 - `scripts/select_wildclaw_similarity_tasks.py`
   Ranks WildClawBench tasks/workspaces by how likely they are to contain
   repeated or near-repeated real-context evidence.
@@ -107,6 +112,10 @@ safe reuse eligibility.
 - `docs/field_function_semantic_subcontexts.md`
   Design notes for splitting context by field/function first and targeting
   SGLang sub-context blocks with no pairwise attention.
+
+- `docs/block_isolated_runtime_prototype.md`
+  Runtime-facing proof plan for independent sub-context prefill/cache and
+  block-isolated attention before patching SGLang internals.
 
 - `docs/wildclaw_similarity_task_selector.md`
   Usage notes and current selector result for choosing better WildClawBench
