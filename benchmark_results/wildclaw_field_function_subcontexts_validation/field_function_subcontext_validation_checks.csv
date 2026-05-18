@@ -1,0 +1,20 @@
+status,check,row_id,line_no,reason
+pass,non_empty_artifact,,,87 rows
+pass,unique_ids,,,87 unique ids
+pass,unique_prefill_unit_ids,,,87 unique prefill units
+pass,required_fields,,,
+pass,allowed_context_field,,,
+pass,non_empty_sub_context,,,
+pass,sub_context_chars_match,,,
+pass,content_hash_match,,,
+pass,semantic_independence_target,,,
+pass,attention_policy_target,,,
+pass,source_spans_present,,,
+pass,sglang_storage_plan_shape,,,
+pass,sglang_required_fields,,,
+pass,cache_key_matches_content_hash,,,
+pass,cache_scope,,,
+pass,can_prefill_independently,,,
+pass,requires_block_isolation_attention_mask,,,
+pass,kv_reuse_granularity,,,
+pass,overlong_fields_split,,,
