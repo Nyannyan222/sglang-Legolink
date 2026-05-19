@@ -56,6 +56,14 @@ safe reuse eligibility.
   independent prefill/cache unit and the simulated attention contract allows
   zero pairwise attention edges between different sub-context blocks.
 
+- `scripts/prepare_sglang_block_runtime_plan.py`
+  Converts field/function sub-context blocks into SGLang-facing prefill request
+  payloads, cache keys, attention ranges, and a scheduler/KV-cache contract.
+
+- `scripts/run_sglang_block_prefill_payloads.py`
+  Sends generated block-prefill payloads to an SGLang OpenAI-compatible
+  endpoint and records per-block cached/prefill token observations.
+
 - `scripts/select_wildclaw_similarity_tasks.py`
   Ranks WildClawBench tasks/workspaces by how likely they are to contain
   repeated or near-repeated real-context evidence.
@@ -125,9 +133,6 @@ safe reuse eligibility.
   Mixed-category evaluation notes for expanding beyond the first Search
   Retrieval pilot.
 
-- `docs/wildclaw_phase2_roadmap.md`
-  Roadmap for broader task coverage, formal grading, and runtime replay.
-
 - `docs/wildclaw_retrieval_execution_report.md`
   Report-ready summary of the Search Retrieval pilot after adding retrieval
   execution.
@@ -157,6 +162,10 @@ safe reuse eligibility.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
+
+- `benchmark_results/sglang_block_runtime_plan/`
+  SGLang-facing block runtime plan, prefill request payloads, attention ranges,
+  and scheduler/KV-cache contract for the block-isolation integration step.
 
 ## Reuse Relation Taxonomy
 
