@@ -154,6 +154,10 @@ safe reuse eligibility.
   Records the local SGLang source checkout path, current revision, and Windows
   runtime boundary.
 
+- `docs/local_sglang_docker_runtime_result.md`
+  Records the local WSL2/Docker SGLang runtime startup and block-prefill replay
+  result on the RTX 5070 machine.
+
 - `docs/wildclaw_similarity_task_selector.md`
   Usage notes and current selector result for choosing better WildClawBench
   semantic-similarity source tasks.
