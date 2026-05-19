@@ -1,5 +1,12 @@
 """Prototype context manager components for NOC semantic sub-contexts."""
 
+from .block_kv_cache import (
+    BlockKVEntry,
+    BlockKVLookup,
+    OrderInvariantBlockKVCache,
+    prefix_reuse_tokens,
+    summarize_lookups,
+)
 from .registry import SubContextRegistry
 from .reuse import ReuseDecisionEngine
 from .runtime_isolation import (
@@ -26,8 +33,11 @@ __all__ = [
     "IndependentPrefillCache",
     "IsolationReport",
     "AttentionRange",
+    "BlockKVEntry",
+    "BlockKVLookup",
     "PrefillBlock",
     "PrefillResult",
+    "OrderInvariantBlockKVCache",
     "RequestProfile",
     "ReuseDecision",
     "ReuseDecisionEngine",
@@ -39,5 +49,7 @@ __all__ = [
     "block_isolation_report",
     "build_blocks",
     "build_sglang_block_runtime_plan",
+    "prefix_reuse_tokens",
+    "summarize_lookups",
     "validate_sglang_block_runtime_plan",
 ]

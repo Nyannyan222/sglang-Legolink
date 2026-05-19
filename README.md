@@ -68,6 +68,10 @@ safe reuse eligibility.
   Parses patched SGLang cache-lookup logs and checks whether OpenClaw block
   metadata reached the runtime cache lookup path.
 
+- `scripts/simulate_sglang_block_kv_reuse.py`
+  Simulates the target block-level KV reuse policy: reused by semantic
+  `cache_key` even when sub-context blocks appear in a different order.
+
 - `scripts/select_wildclaw_similarity_tasks.py`
   Ranks WildClawBench tasks/workspaces by how likely they are to contain
   repeated or near-repeated real-context evidence.
@@ -133,6 +137,10 @@ safe reuse eligibility.
   Instructions for patching SGLang cache-lookup logs so OpenClaw block metadata
   can be verified at the runtime request/cache lookup path.
 
+- `docs/sglang_block_kv_reuse_policy.md`
+  Defines the order-invariant semantic block KV reuse policy and reports the
+  local order-permutation simulation result.
+
 - `docs/wildclaw_similarity_task_selector.md`
   Usage notes and current selector result for choosing better WildClawBench
   semantic-similarity source tasks.
@@ -174,6 +182,10 @@ safe reuse eligibility.
 - `benchmark_results/sglang_block_runtime_plan/`
   SGLang-facing block runtime plan, prefill request payloads, attention ranges,
   and scheduler/KV-cache contract for the block-isolation integration step.
+
+- `benchmark_results/sglang_block_kv_reuse_simulation/`
+  Order-permutation simulation comparing native prefix-style reuse with the
+  intended semantic block-key KV reuse policy.
 
 ## Reuse Relation Taxonomy
 
