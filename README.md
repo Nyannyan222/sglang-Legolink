@@ -64,6 +64,10 @@ safe reuse eligibility.
   Sends generated block-prefill payloads to an SGLang OpenAI-compatible
   endpoint and records per-block cached/prefill token observations.
 
+- `scripts/verify_sglang_openclaw_block_logs.py`
+  Parses patched SGLang cache-lookup logs and checks whether OpenClaw block
+  metadata reached the runtime cache lookup path.
+
 - `scripts/select_wildclaw_similarity_tasks.py`
   Ranks WildClawBench tasks/workspaces by how likely they are to contain
   repeated or near-repeated real-context evidence.
@@ -124,6 +128,10 @@ safe reuse eligibility.
 - `docs/block_isolated_runtime_prototype.md`
   Runtime-facing proof plan for independent sub-context prefill/cache and
   block-isolated attention before patching SGLang internals.
+
+- `docs/sglang_openclaw_block_metadata_patch.md`
+  Instructions for patching SGLang cache-lookup logs so OpenClaw block metadata
+  can be verified at the runtime request/cache lookup path.
 
 - `docs/wildclaw_similarity_task_selector.md`
   Usage notes and current selector result for choosing better WildClawBench

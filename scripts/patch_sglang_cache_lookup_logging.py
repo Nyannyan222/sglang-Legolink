@@ -23,6 +23,7 @@ import sys
 
 MARKER = "# OPENCLAW_PREFIX_CACHE_LOOKUP_LOGGING"
 SCHEDULE_BATCH_MARKER = "# OPENCLAW_PREFIX_CACHE_LOOKUP_LOGGING_SCHEDULE_BATCH"
+BLOCK_METADATA_MARKER = "# OPENCLAW_BLOCK_METADATA_CACHE_LOOKUP_LOGGING"
 
 
 def find_schedule_policy_path() -> pathlib.Path:
@@ -65,9 +66,64 @@ def find_module_path(module_name: str, relative_path: tuple[str, ...]) -> pathli
     raise RuntimeError(f"Could not locate {module_name}")
 
 
+def block_metadata_helper() -> str:
+    return f'''
+
+{BLOCK_METADATA_MARKER}
+def _openclaw_request_custom_labels(req):
+    labels = getattr(req, "custom_labels", None)
+    if labels is None:
+        return {{}}
+    if isinstance(labels, dict):
+        return labels
+    if hasattr(labels, "model_dump"):
+        return labels.model_dump()
+    try:
+        return dict(labels)
+    except Exception:
+        return {{}}
+
+
+def _openclaw_block_metadata(req):
+    labels = _openclaw_request_custom_labels(req)
+    cache_key = labels.get("openclaw_cache_key")
+    extra_key = getattr(req, "extra_key", None)
+    return {{
+        "openclaw_prefill_unit_id": labels.get("openclaw_prefill_unit_id"),
+        "openclaw_cache_key": cache_key,
+        "openclaw_context_field": labels.get("openclaw_context_field"),
+        "openclaw_extra_key_matches_cache_key": (
+            str(extra_key) == str(cache_key) if cache_key is not None else None
+        ),
+    }}
+'''
+
+
+def add_block_metadata_logging(text: str) -> tuple[str, bool]:
+    if BLOCK_METADATA_MARKER in text:
+        return text, False
+
+    helper_anchor = """def _openclaw_prefix_cache_node_id(node):
+    return None if node is None else hex(id(node))
+"""
+    if helper_anchor not in text:
+        raise RuntimeError("Could not find OpenClaw prefix-cache helper anchor")
+    text = text.replace(helper_anchor, helper_anchor + block_metadata_helper(), 1)
+
+    log_anchor = '    logger.info(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))\n'
+    if log_anchor not in text:
+        raise RuntimeError("Could not find OpenClaw cache-lookup logger anchor")
+    text = text.replace(
+        log_anchor,
+        '    payload.update(_openclaw_block_metadata(req))\n' + log_anchor,
+        1,
+    )
+    return text, True
+
+
 def patch_text(text: str) -> tuple[str, bool]:
     if MARKER in text:
-        return text, False
+        return add_block_metadata_logging(text)
 
     if "import json\n" not in text:
         text = text.replace("import logging\n", "import logging\nimport json\n", 1)
@@ -90,6 +146,35 @@ def patch_text(text: str) -> tuple[str, bool]:
 {MARKER}
 def _openclaw_prefix_cache_node_id(node):
     return None if node is None else hex(id(node))
+
+
+{BLOCK_METADATA_MARKER}
+def _openclaw_request_custom_labels(req):
+    labels = getattr(req, "custom_labels", None)
+    if labels is None:
+        return {{}}
+    if isinstance(labels, dict):
+        return labels
+    if hasattr(labels, "model_dump"):
+        return labels.model_dump()
+    try:
+        return dict(labels)
+    except Exception:
+        return {{}}
+
+
+def _openclaw_block_metadata(req):
+    labels = _openclaw_request_custom_labels(req)
+    cache_key = labels.get("openclaw_cache_key")
+    extra_key = getattr(req, "extra_key", None)
+    return {{
+        "openclaw_prefill_unit_id": labels.get("openclaw_prefill_unit_id"),
+        "openclaw_cache_key": cache_key,
+        "openclaw_context_field": labels.get("openclaw_context_field"),
+        "openclaw_extra_key_matches_cache_key": (
+            str(extra_key) == str(cache_key) if cache_key is not None else None
+        ),
+    }}
 
 
 def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
@@ -120,6 +205,7 @@ def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
         "cache_protected_len": match_result.cache_protected_len,
         "extra_key": repr(getattr(req, "extra_key", None)),
     }}
+    payload.update(_openclaw_block_metadata(req))
     logger.info(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 '''
     text = text.replace(helper_anchor, helper_anchor + helper, 1)
@@ -170,7 +256,7 @@ def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
 
 def patch_schedule_batch_text(text: str) -> tuple[str, bool]:
     if SCHEDULE_BATCH_MARKER in text:
-        return text, False
+        return add_block_metadata_logging(text)
 
     if "import json\n" not in text:
         text = text.replace("import enum\n", "import enum\nimport json\n", 1)
@@ -191,6 +277,35 @@ _PREFIX_CACHE_LOOKUP_DEBUG_LOG = (
 
 def _openclaw_prefix_cache_node_id(node):
     return None if node is None else hex(id(node))
+
+
+{BLOCK_METADATA_MARKER}
+def _openclaw_request_custom_labels(req):
+    labels = getattr(req, "custom_labels", None)
+    if labels is None:
+        return {{}}
+    if isinstance(labels, dict):
+        return labels
+    if hasattr(labels, "model_dump"):
+        return labels.model_dump()
+    try:
+        return dict(labels)
+    except Exception:
+        return {{}}
+
+
+def _openclaw_block_metadata(req):
+    labels = _openclaw_request_custom_labels(req)
+    cache_key = labels.get("openclaw_cache_key")
+    extra_key = getattr(req, "extra_key", None)
+    return {{
+        "openclaw_prefill_unit_id": labels.get("openclaw_prefill_unit_id"),
+        "openclaw_cache_key": cache_key,
+        "openclaw_context_field": labels.get("openclaw_context_field"),
+        "openclaw_extra_key_matches_cache_key": (
+            str(extra_key) == str(cache_key) if cache_key is not None else None
+        ),
+    }}
 
 
 def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
@@ -221,6 +336,7 @@ def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
         "cache_protected_len": len(match_result.device_indices),
         "extra_key": repr(getattr(req, "extra_key", None)),
     }}
+    payload.update(_openclaw_block_metadata(req))
     logger.info(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 '''
     text = text.replace(helper_anchor, helper_anchor + helper, 1)
