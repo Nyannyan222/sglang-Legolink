@@ -150,6 +150,10 @@ safe reuse eligibility.
   Explains how to inspect an installed SGLang source tree before applying the
   internal semantic block-KV cache patch.
 
+- `docs/local_sglang_source_install.md`
+  Records the local SGLang source checkout path, current revision, and Windows
+  runtime boundary.
+
 - `docs/wildclaw_similarity_task_selector.md`
   Usage notes and current selector result for choosing better WildClawBench
   semantic-similarity source tasks.

@@ -26,12 +26,15 @@ from typing import Any
 MODULE_CANDIDATES = {
     "schedule_policy": [
         ("sglang.srt.managers.schedule_policy", ("sglang", "srt", "managers", "schedule_policy.py")),
+        ("sglang.srt.managers.schedule_policy", ("python", "sglang", "srt", "managers", "schedule_policy.py")),
     ],
     "schedule_batch": [
         ("sglang.srt.managers.schedule_batch", ("sglang", "srt", "managers", "schedule_batch.py")),
+        ("sglang.srt.managers.schedule_batch", ("python", "sglang", "srt", "managers", "schedule_batch.py")),
     ],
     "io_struct": [
         ("sglang.srt.managers.io_struct", ("sglang", "srt", "managers", "io_struct.py")),
+        ("sglang.srt.managers.io_struct", ("python", "sglang", "srt", "managers", "io_struct.py")),
     ],
     "radix_cache": [
         ("sglang.srt.mem_cache.radix_cache", ("sglang", "srt", "mem_cache", "radix_cache.py")),
@@ -43,6 +46,7 @@ MODULE_CANDIDATES = {
     ],
     "scheduler": [
         ("sglang.srt.managers.scheduler", ("sglang", "srt", "managers", "scheduler.py")),
+        ("sglang.srt.managers.scheduler", ("python", "sglang", "srt", "managers", "scheduler.py")),
     ],
 }
 
