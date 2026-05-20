@@ -56,6 +56,11 @@ safe reuse eligibility.
   cross-task duplicates; negative pairs come from strict judge-rejected
   semantic candidates.
 
+- `scripts/mine_wildclaw_reusable_evidence_pairs.py`
+  Scans the local WildClawBench task/workspace tree for cross-task reusable
+  evidence pairs. Exact duplicate sub-contexts become safe positives; high
+  overlap non-identical pairs become manual/LLM review candidates.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -228,6 +233,11 @@ safe reuse eligibility.
   3 safe positive exact-duplicate pairs from WildClaw tool-definition
   sub-contexts and 9 selected negative pairs balanced across broad-topic,
   partial-overlap, and unrelated relations.
+
+- `benchmark_results/wildclaw_reusable_evidence_mining/`
+  Expanded local WildClawBench scan over 60 tasks. The current output contains
+  36 safe exact positive pairs, 4 near-duplicate review candidates, and a
+  108-row positive/negative semantic reuse benchmark.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.

@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-05-20T18:15:16+00:00",
+  "wildclaw_root": "C:\\Users\\Administrator\\OneDrive\\文件\\New project\\external\\WildClawBench",
+  "tasks_scanned": 60,
+  "blocks": 291,
+  "included_workspace_files": 21,
+  "skipped_workspace_files": 6,
+  "skipped_workspaces": 49,
+  "categories": "all",
+  "block_field_counts": {
+    "user_prompt": 60,
+    "tool_definitions": 21,
+    "workspace_file": 3,
+    "workspace_segment": 207
+  },
+  "safe_exact_positive_pairs": 36,
+  "near_duplicate_review_candidates": 4,
+  "negative_pairs_selected": 72,
+  "benchmark_rows": 108,
+  "positive_field_counts": {
+    "tool_definitions": 36
+  },
+  "benchmark_relation_counts": {
+    "exact_duplicate": 36,
+    "broad_topic": 19,
+    "partial_overlap": 27,
+    "unrelated": 26
+  },
+  "near_threshold": 0.55,
+  "outputs": {
+    "safe_positive_pairs": "benchmark_results\\wildclaw_reusable_evidence_mining\\wildclaw_safe_reuse_positive_pairs.csv",
+    "review_candidates": "benchmark_results\\wildclaw_reusable_evidence_mining\\wildclaw_reuse_review_candidates.csv",
+    "benchmark": "benchmark_results\\wildclaw_reusable_evidence_mining\\wildclaw_expanded_semantic_reuse_benchmark.csv"
+  }
+}
