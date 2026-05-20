@@ -1,10 +1,10 @@
 # WildClaw Prompt Internal Segmentation
 
-- Generated: `2026-05-20T18:29:04+00:00`
+- Generated: `2026-05-20T18:45:49+00:00`
 - Tasks scanned: 60
 - Prompt-internal blocks: 625
 - Safe exact prompt-template positive pairs: 3
-- Parameterized template review candidates: 57
+- Parameterized template review candidates: 7
 
 ## Why This Step Matters
 
@@ -27,7 +27,7 @@ shared instruction templates with task-specific facts. This step splits the
 | relation_type | pairs |
 | --- | --- |
 | exact_instruction_template | 3 |
-| parameterized_template_candidate | 57 |
+| parameterized_template_candidate | 7 |
 
 ## Interpretation
 

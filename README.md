@@ -257,7 +257,7 @@ safe reuse eligibility.
 - `benchmark_results/wildclaw_prompt_internal_segmentation/`
   Finer segmentation of WildClaw prompt fields. The current run scans 60 tasks,
   builds 625 prompt-internal blocks, finds 3 safe exact instruction-template
-  positive pairs, and exports 57 parameterized template review candidates.
+  positive pairs, and exports 7 parameterized template review candidates.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
@@ -281,6 +281,15 @@ safe reuse eligibility.
 ## Reuse Relation Taxonomy
 
 The manager separates retrieval relevance from reuse eligibility:
+
+Each reusable or reviewable sub-context now carries:
+
+- `canonical_text`: the normalized text used for semantic reuse grouping. For
+  exact positives this is the normalized instruction/evidence text; for
+  parameterized review candidates it is the placeholder-normalized template.
+- `canonical_key`: a stable key derived from the context field, functional
+  role, reuse kind, and canonical text hash. This is the intended lookup key
+  for later registry/KV-cache experiments.
 
 | relation type | meaning | reusable |
 | --- | --- | --- |

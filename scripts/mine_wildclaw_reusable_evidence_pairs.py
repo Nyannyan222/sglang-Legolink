@@ -39,6 +39,8 @@ class Block:
     text: str
     content_hash: str
     normalized_hash: str
+    canonical_key: str
+    canonical_text: str
     shingles: frozenset[str]
 
 
@@ -58,6 +60,10 @@ def normalize_text(text: str) -> str:
 
 def compact_text(text: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", normalize_text(text))
+
+
+def canonical_key(context_field: str, functional_role: str, normalized_digest: str) -> str:
+    return f"wildclaw_block:{context_field}:{functional_role}:exact:{normalized_digest[:24]}"
 
 
 def shingles(text: str, n: int = 7, max_items: int = 1200) -> frozenset[str]:
@@ -148,6 +154,8 @@ def make_block(
         text=text,
         content_hash=digest,
         normalized_hash=normalized_digest,
+        canonical_key=canonical_key(context_field, functional_role, normalized_digest),
+        canonical_text=normalized,
         shingles=shingles(text),
     )
 
@@ -265,6 +273,8 @@ def block_to_ref(block: Block, prefix: str) -> dict[str, Any]:
         f"{prefix}_chars": len(block.text),
         f"{prefix}_content_hash": block.content_hash,
         f"{prefix}_normalized_hash": block.normalized_hash,
+        f"{prefix}_canonical_key": block.canonical_key,
+        f"{prefix}_canonical_text": block.canonical_text,
         f"{prefix}_preview": preview(block.text),
     }
 
@@ -278,6 +288,8 @@ def pair_row(left: Block, right: Block, relation_type: str, label: str, decision
         "needs_judge": label != "positive",
         "similarity_score": "" if score is None else round(score, 4),
         "decision_basis": decision_basis,
+        "pair_canonical_key": left.canonical_key if left.canonical_key == right.canonical_key else "",
+        "pair_canonical_text": left.canonical_text if left.canonical_key == right.canonical_key else "",
         **block_to_ref(left, "left"),
         **block_to_ref(right, "right"),
     }

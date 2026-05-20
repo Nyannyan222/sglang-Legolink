@@ -92,6 +92,21 @@ def compact_hash_text(text: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff<>]+", "", text)
 
 
+def canonical_reuse_fields(block_type: str, functional_role: str, canonical: str, template: str, requires_delta: bool) -> dict[str, str]:
+    canonical_kind = "template" if requires_delta else "exact"
+    canonical_value = template if requires_delta else canonical
+    digest = stable_hash(compact_hash_text(canonical_value))
+    key = f"prompt_internal:{functional_role}:{canonical_kind}:{digest[:24]}"
+    return {
+        "canonical_key": key,
+        "canonical_text": canonical_value,
+        "canonical_kind": canonical_kind,
+        "canonical_hash": digest,
+        "exact_text_hash": stable_hash(compact_hash_text(canonical)),
+        "template_hash": stable_hash(compact_hash_text(template)),
+    }
+
+
 def split_fenced_blocks(prompt: str) -> list[tuple[str, bool, int, int]]:
     parts: list[tuple[str, bool, int, int]] = []
     cursor = 0
@@ -185,6 +200,8 @@ def prompt_blocks(task: dict[str, Any], task_file: Path, wildclaw_root: Path, ma
             block_type, functional_role, exact_safe = classify_block(text, is_code)
             canonical = canonical_text(text)
             template = template_text(text)
+            requires_delta = block_type in {"parameterized_instruction_template", "mixed_instruction_with_parameters"}
+            canonical_fields = canonical_reuse_fields(block_type, functional_role, canonical, template, requires_delta)
             rows.append(
                 {
                     "id": f"{task['task_id']}__prompt_internal__{block_index:04d}",
@@ -201,11 +218,10 @@ def prompt_blocks(task: dict[str, Any], task_file: Path, wildclaw_root: Path, ma
                     "char_end": char_end,
                     "sub_context": text,
                     "sub_context_chars": len(text),
-                    "canonical_hash": stable_hash(compact_hash_text(canonical)),
-                    "template_hash": stable_hash(compact_hash_text(template)),
+                    **canonical_fields,
                     "template_text": template,
                     "safe_exact_reuse_candidate": exact_safe,
-                    "requires_parameter_delta": block_type in {"parameterized_instruction_template", "mixed_instruction_with_parameters"},
+                    "requires_parameter_delta": requires_delta,
                     "attention_policy_target": "independent_prompt_internal_subcontext",
                 }
             )
@@ -216,7 +232,7 @@ def mine_exact_safe_pairs(blocks: list[dict[str, Any]], max_pairs_per_group: int
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for block in blocks:
         if block["safe_exact_reuse_candidate"]:
-            groups[block["canonical_hash"]].append(block)
+            groups[block["canonical_key"]].append(block)
     pairs: list[dict[str, Any]] = []
     for group in groups.values():
         if len({row["task_id"] for row in group}) < 2:
@@ -236,16 +252,16 @@ def mine_parameterized_candidates(blocks: list[dict[str, Any]], max_pairs_per_gr
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for block in blocks:
         if block["requires_parameter_delta"] or block["block_type"] in {"output_format_template", "reusable_instruction_template"}:
-            groups[block["template_hash"]].append(block)
+            groups[block["canonical_key"]].append(block)
     pairs: list[dict[str, Any]] = []
     for group in groups.values():
         tasks = {row["task_id"] for row in group}
-        canonical_hashes = {row["canonical_hash"] for row in group}
-        if len(group) < 2 or len(tasks) < 2 or len(canonical_hashes) < 2:
+        exact_hashes = {row["exact_text_hash"] for row in group}
+        if len(group) < 2 or len(tasks) < 2 or len(exact_hashes) < 2:
             continue
         emitted = 0
         for left, right in itertools.combinations(sorted(group, key=lambda row: row["id"]), 2):
-            if left["task_id"] == right["task_id"] or left["canonical_hash"] == right["canonical_hash"]:
+            if left["task_id"] == right["task_id"] or left["exact_text_hash"] == right["exact_text_hash"]:
                 continue
             pairs.append(
                 pair_row(
@@ -292,6 +308,12 @@ def pair_row(
         "right_template_hash": right["template_hash"],
         "left_canonical_hash": left["canonical_hash"],
         "right_canonical_hash": right["canonical_hash"],
+        "left_canonical_key": left["canonical_key"],
+        "right_canonical_key": right["canonical_key"],
+        "pair_canonical_key": left["canonical_key"] if left["canonical_key"] == right["canonical_key"] else "",
+        "pair_canonical_text": left["canonical_text"] if left["canonical_key"] == right["canonical_key"] else "",
+        "left_canonical_text": left["canonical_text"],
+        "right_canonical_text": right["canonical_text"],
         "left_preview": preview(left["sub_context"]),
         "right_preview": preview(right["sub_context"]),
     }
