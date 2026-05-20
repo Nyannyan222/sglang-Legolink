@@ -50,6 +50,12 @@ safe reuse eligibility.
   same-answer utility, judge score, and exact content hashes decide whether a
   pair is actually safe to reuse.
 
+- `scripts/build_semantic_reuse_benchmark.py`
+  Builds a positive/negative semantic reuse benchmark. Positive pairs are
+  mined from real WildClaw field/function sub-contexts when they are safe
+  cross-task duplicates; negative pairs come from strict judge-rejected
+  semantic candidates.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -216,6 +222,12 @@ safe reuse eligibility.
   Reuse-candidate evaluation over the strict semantic-similarity outputs. The
   current result rejects all 111 candidate pairs as not safe to reuse, because
   they are only partial-overlap, broad-topic, or unrelated matches.
+
+- `benchmark_results/semantic_reuse_benchmark/`
+  Positive/negative semantic reuse benchmark. The current local build contains
+  3 safe positive exact-duplicate pairs from WildClaw tool-definition
+  sub-contexts and 9 selected negative pairs balanced across broad-topic,
+  partial-overlap, and unrelated relations.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
