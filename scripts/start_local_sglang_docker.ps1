@@ -59,8 +59,14 @@ if ($existing) {
 }
 
 if (-not (& $docker ps --filter "name=^/$ContainerName$" --format "{{.Names}}")) {
-    Write-Host "Pulling image if needed: $Image"
-    Invoke-Docker pull $Image
+    $localImage = & $docker image inspect $Image --format "{{.Id}}" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $localImage) {
+        Write-Host "Pulling image if needed: $Image"
+        Invoke-Docker pull $Image
+    }
+    else {
+        Write-Host "Using local image: $Image"
+    }
 
     Write-Host "Starting SGLang container: $ContainerName"
     $runArgs = @(
@@ -68,6 +74,7 @@ if (-not (& $docker ps --filter "name=^/$ContainerName$" --format "{{.Names}}"))
         "--name", $ContainerName,
         "--gpus", "all",
         "--shm-size", $ShmSize,
+        "-e", "SGLANG_PREFIX_CACHE_DEBUG_LOG=1",
         "-p", "${Port}:30000",
         "-v", "${hfCache}:/root/.cache/huggingface",
         $Image,

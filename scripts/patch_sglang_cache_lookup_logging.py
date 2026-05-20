@@ -71,6 +71,13 @@ def block_metadata_helper() -> str:
 
 {BLOCK_METADATA_MARKER}
 def _openclaw_request_custom_labels(req):
+    sampling_params = getattr(req, "sampling_params", None)
+    custom_params = getattr(sampling_params, "custom_params", None)
+    if isinstance(custom_params, dict):
+        metadata = custom_params.get("openclaw_metadata")
+        if isinstance(metadata, dict):
+            return metadata
+
     labels = getattr(req, "custom_labels", None)
     if labels is None:
         return {{}}
@@ -150,6 +157,13 @@ def _openclaw_prefix_cache_node_id(node):
 
 {BLOCK_METADATA_MARKER}
 def _openclaw_request_custom_labels(req):
+    sampling_params = getattr(req, "sampling_params", None)
+    custom_params = getattr(sampling_params, "custom_params", None)
+    if isinstance(custom_params, dict):
+        metadata = custom_params.get("openclaw_metadata")
+        if isinstance(metadata, dict):
+            return metadata
+
     labels = getattr(req, "custom_labels", None)
     if labels is None:
         return {{}}
@@ -255,13 +269,26 @@ def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
 
 
 def patch_schedule_batch_text(text: str) -> tuple[str, bool]:
-    if SCHEDULE_BATCH_MARKER in text:
-        return add_block_metadata_logging(text)
-
+    imports_changed = False
+    missing_imports = []
     if "import json\n" not in text:
-        text = text.replace("import enum\n", "import enum\nimport json\n", 1)
+        missing_imports.append("import json")
     if "import os\n" not in text:
-        text = text.replace("import json\n", "import json\nimport os\n", 1)
+        missing_imports.append("import os")
+    if missing_imports:
+        import_anchor = "import logging\n"
+        if import_anchor not in text:
+            raise RuntimeError("Could not find schedule_batch import anchor")
+        text = text.replace(
+            import_anchor,
+            import_anchor + "\n".join(missing_imports) + "\n",
+            1,
+        )
+        imports_changed = True
+
+    if SCHEDULE_BATCH_MARKER in text:
+        text, metadata_changed = add_block_metadata_logging(text)
+        return text, imports_changed or metadata_changed
 
     helper_anchor = "logger = logging.getLogger(__name__)\n"
     if helper_anchor not in text:
@@ -281,6 +308,13 @@ def _openclaw_prefix_cache_node_id(node):
 
 {BLOCK_METADATA_MARKER}
 def _openclaw_request_custom_labels(req):
+    sampling_params = getattr(req, "sampling_params", None)
+    custom_params = getattr(sampling_params, "custom_params", None)
+    if isinstance(custom_params, dict):
+        metadata = custom_params.get("openclaw_metadata")
+        if isinstance(metadata, dict):
+            return metadata
+
     labels = getattr(req, "custom_labels", None)
     if labels is None:
         return {{}}
@@ -341,22 +375,44 @@ def _openclaw_log_prefix_cache_lookup(req, token_ids, match_result):
 '''
     text = text.replace(helper_anchor, helper_anchor + helper, 1)
 
-    call_anchor = """            self.cache_protected_len = len(self.prefix_indices)
+    old_call_anchor = """            self.cache_protected_len = len(self.prefix_indices)
 
         if (
 """
-    if call_anchor not in text:
-        raise RuntimeError("Could not find schedule_batch prefix assignment anchor")
-    text = text.replace(
-        call_anchor,
-        """            self.cache_protected_len = len(self.prefix_indices)
+    if old_call_anchor in text:
+        text = text.replace(
+            old_call_anchor,
+            """            self.cache_protected_len = len(self.prefix_indices)
             _openclaw_log_prefix_cache_lookup(self, token_ids, match_result)
 
         if (
 """,
-        1,
-    )
-    return text, True
+            1,
+        )
+        return text, True
+
+    current_call_anchor = """            else:
+                self.cache_protected_len = len(self.prefix_indices)
+
+            if self.is_dllm():
+"""
+    if current_call_anchor in text:
+        text = text.replace(
+            current_call_anchor,
+            """            else:
+                self.cache_protected_len = len(self.prefix_indices)
+            _openclaw_token_ids = (
+                token_ids_to_match if "token_ids_to_match" in locals() else token_ids
+            )
+            _openclaw_log_prefix_cache_lookup(self, _openclaw_token_ids, match_result)
+
+            if self.is_dllm():
+""",
+            1,
+        )
+        return text, True
+
+    raise RuntimeError("Could not find schedule_batch prefix assignment anchor")
 
 
 def patch_file(target: pathlib.Path, patcher) -> bool:

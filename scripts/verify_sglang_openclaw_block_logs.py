@@ -60,27 +60,39 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
-    with_block_id = [event for event in events if event.get("openclaw_prefill_unit_id")]
-    with_cache_key = [event for event in events if event.get("openclaw_cache_key")]
-    matching = [
+    openclaw_events = [
         event
         for event in events
+        if event.get("openclaw_prefill_unit_id") or event.get("openclaw_cache_key")
+    ]
+    with_block_id = [
+        event for event in openclaw_events if event.get("openclaw_prefill_unit_id")
+    ]
+    with_cache_key = [
+        event for event in openclaw_events if event.get("openclaw_cache_key")
+    ]
+    matching = [
+        event
+        for event in openclaw_events
         if event.get("openclaw_extra_key_matches_cache_key") is True
     ]
     mismatching = [
         event
-        for event in events
+        for event in openclaw_events
         if event.get("openclaw_extra_key_matches_cache_key") is False
     ]
     block_ids = sorted({str(event.get("openclaw_prefill_unit_id")) for event in with_block_id})
     return {
         "cache_lookup_events": len(events),
+        "openclaw_cache_lookup_events": len(openclaw_events),
         "events_with_openclaw_prefill_unit_id": len(with_block_id),
         "events_with_openclaw_cache_key": len(with_cache_key),
         "events_extra_key_matches_cache_key": len(matching),
         "events_extra_key_mismatch_cache_key": len(mismatching),
         "unique_openclaw_blocks": len(block_ids),
-        "metadata_complete": bool(events) and len(with_block_id) == len(events) and len(with_cache_key) == len(events),
+        "metadata_complete": bool(openclaw_events)
+        and len(with_block_id) == len(openclaw_events)
+        and len(with_cache_key) == len(openclaw_events),
         "extra_key_consistent": not mismatching,
     }
 
@@ -113,6 +125,7 @@ def main() -> int:
     print("SGLang OpenClaw block metadata log verification")
     print("==============================================")
     print(f"Cache lookup events: {summary['cache_lookup_events']}")
+    print(f"OpenClaw cache lookup events: {summary['openclaw_cache_lookup_events']}")
     print(f"Events with block id: {summary['events_with_openclaw_prefill_unit_id']}")
     print(f"Events with cache key: {summary['events_with_openclaw_cache_key']}")
     print(f"Extra key mismatches: {summary['events_extra_key_mismatch_cache_key']}")

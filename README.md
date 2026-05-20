@@ -68,6 +68,15 @@ safe reuse eligibility.
   Parses patched SGLang cache-lookup logs and checks whether OpenClaw block
   metadata reached the runtime cache lookup path.
 
+- `scripts/patch_sglang_openclaw_request_metadata.py`
+  Patches SGLang OpenAI request parsing so body-level OpenClaw block metadata
+  is preserved in `sampling_params.custom_params.openclaw_metadata` without
+  polluting SGLang metrics `custom_labels`.
+
+- `docs/openclaw_sglang_request_metadata_patch_result.md`
+  Records the local SGLang Docker patch and verification result for OpenClaw
+  block metadata request parsing and scheduler cache-lookup logging.
+
 - `scripts/simulate_sglang_block_kv_reuse.py`
   Simulates the target block-level KV reuse policy: reused by semantic
   `cache_key` even when sub-context blocks appear in a different order.
