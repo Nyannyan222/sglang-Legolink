@@ -61,6 +61,11 @@ safe reuse eligibility.
   evidence pairs. Exact duplicate sub-contexts become safe positives; high
   overlap non-identical pairs become manual/LLM review candidates.
 
+- `scripts/judge_semantic_reuse_review_candidates.py`
+  Applies the promotion gate for near-duplicate review candidates. Only pairs
+  with same-answer utility and a safe reuse label are promoted; template-level
+  overlap with different task facts is rejected as partial overlap.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -238,6 +243,11 @@ safe reuse eligibility.
   Expanded local WildClawBench scan over 60 tasks. The current output contains
   36 safe exact positive pairs, 4 near-duplicate review candidates, and a
   108-row positive/negative semantic reuse benchmark.
+
+- `benchmark_results/semantic_reuse_candidate_judging/`
+  Judging outputs for the near-duplicate review candidates. The current result
+  rejects all 4 candidates as partial-overlap template matches and promotes no
+  new positives, preserving the 36 safe exact positives.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.

@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-05-20T18:22:26+00:00",
+  "review_candidates": 4,
+  "promoted_positive_pairs": 0,
+  "rejected_candidates": 4,
+  "existing_safe_positive_pairs": 36,
+  "selected_negative_pairs": 72,
+  "promoted_benchmark_rows": 108,
+  "judged_relation_counts": {
+    "partial_overlap": 4
+  },
+  "outputs": {
+    "judged_candidates": "benchmark_results\\semantic_reuse_candidate_judging\\semantic_reuse_judged_candidates.csv",
+    "promoted_positive_pairs": "benchmark_results\\semantic_reuse_candidate_judging\\semantic_reuse_promoted_positive_pairs.csv",
+    "rejected_candidates": "benchmark_results\\semantic_reuse_candidate_judging\\semantic_reuse_rejected_candidates.csv",
+    "promoted_benchmark": "benchmark_results\\semantic_reuse_candidate_judging\\semantic_reuse_promoted_benchmark.csv"
+  }
+}
