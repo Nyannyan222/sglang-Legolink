@@ -66,6 +66,11 @@ safe reuse eligibility.
   with same-answer utility and a safe reuse label are promoted; template-level
   overlap with different task facts is rejected as partial overlap.
 
+- `scripts/segment_wildclaw_prompt_internal_blocks.py`
+  Splits WildClaw `user_prompt` fields into finer prompt-internal semantic
+  blocks. Exact repeated instruction blocks become safe positives, while
+  parameterized template matches are exported for judge/manual review.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -248,6 +253,11 @@ safe reuse eligibility.
   Judging outputs for the near-duplicate review candidates. The current result
   rejects all 4 candidates as partial-overlap template matches and promotes no
   new positives, preserving the 36 safe exact positives.
+
+- `benchmark_results/wildclaw_prompt_internal_segmentation/`
+  Finer segmentation of WildClaw prompt fields. The current run scans 60 tasks,
+  builds 625 prompt-internal blocks, finds 3 safe exact instruction-template
+  positive pairs, and exports 57 parameterized template review candidates.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.

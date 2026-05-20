@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-05-20T18:29:04+00:00",
+  "wildclaw_root": "C:\\Users\\Administrator\\OneDrive\\文件\\New project\\external\\WildClawBench",
+  "tasks_scanned": 60,
+  "prompt_internal_blocks": 625,
+  "safe_exact_pairs": 3,
+  "parameterized_review_candidates": 57,
+  "block_type_counts": {
+    "parameterized_instruction_template": 106,
+    "section_heading_or_short_label": 307,
+    "output_format_template": 20,
+    "reusable_instruction_template": 34,
+    "task_specific_parameter": 158
+  },
+  "pair_relation_counts": {
+    "exact_instruction_template": 3,
+    "parameterized_template_candidate": 57
+  },
+  "outputs": {
+    "subcontexts": "benchmark_results\\wildclaw_prompt_internal_segmentation\\wildclaw_prompt_internal_subcontexts.jsonl",
+    "safe_pairs": "benchmark_results\\wildclaw_prompt_internal_segmentation\\wildclaw_prompt_internal_safe_pairs.csv",
+    "review_candidates": "benchmark_results\\wildclaw_prompt_internal_segmentation\\wildclaw_prompt_internal_review_candidates.csv"
+  }
+}
