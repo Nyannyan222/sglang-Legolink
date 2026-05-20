@@ -1,0 +1,12 @@
+{
+  "log_path": "benchmark_results/sglang_block_prefill_runs/sglang_block_prefill_20260520_153110/sglang_docker.log",
+  "cache_lookup_events": 5,
+  "openclaw_cache_lookup_events": 4,
+  "events_with_openclaw_prefill_unit_id": 4,
+  "events_with_openclaw_cache_key": 4,
+  "events_extra_key_matches_cache_key": 4,
+  "events_extra_key_mismatch_cache_key": 0,
+  "unique_openclaw_blocks": 2,
+  "metadata_complete": true,
+  "extra_key_consistent": true
+}

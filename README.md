@@ -68,6 +68,10 @@ safe reuse eligibility.
   Parses patched SGLang cache-lookup logs and checks whether OpenClaw block
   metadata reached the runtime cache lookup path.
 
+- `scripts/summarize_openclaw_method_effect.py`
+  Produces the current evidence summary that separates proven SGLang runtime
+  behavior from the still-simulated block-key KV reuse policy.
+
 - `scripts/patch_sglang_openclaw_request_metadata.py`
   Patches SGLang OpenAI request parsing so body-level OpenClaw block metadata
   is preserved in `sampling_params.custom_params.openclaw_metadata` without
@@ -212,6 +216,10 @@ safe reuse eligibility.
 - `benchmark_results/sglang_block_kv_reuse_simulation/`
   Order-permutation simulation comparing native prefix-style reuse with the
   intended semantic block-key KV reuse policy.
+
+- `benchmark_results/openclaw_method_effect_validation/`
+  Current validation report explaining what is proven, what remains simulated,
+  and what SGLang runtime patch is needed next.
 
 - `benchmark_results/sglang_block_kv_patch_points/`
   Source inspection report for locating SGLang scheduler, prefix-cache, and

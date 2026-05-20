@@ -1,0 +1,4 @@
+sequence_id,blocks,tokens,prefix_baseline_reused_tokens,prefix_baseline_reuse_ratio,block_kv_reused_tokens,block_kv_prefill_tokens,block_kv_reuse_ratio,block_kv_cache_hits
+original,8,23712,0,0.0,0,23712,0.0,0
+repeat_same_order,8,23712,23712,1.0,23712,0,1.0,8
+permuted_reverse_order,8,23712,0,0.0,23712,0,1.0,8
