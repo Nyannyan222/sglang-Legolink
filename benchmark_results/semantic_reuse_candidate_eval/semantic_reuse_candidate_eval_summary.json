@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-05-20T17:32:34+00:00",
+  "inputs": [
+    "benchmark_results\\semantic_similarity_discovery_openai_strict\\semantic_similar_subcontext_pairs.csv",
+    "benchmark_results\\semantic_similarity_discovery_mixed_strict\\semantic_similar_subcontext_pairs.csv"
+  ],
+  "judge_threshold": 3.0,
+  "embedding_threshold": 0.7,
+  "total_pairs": 111,
+  "safe_to_reuse_pairs": 0,
+  "judge_required_pairs": 0,
+  "do_not_reuse_pairs": 111,
+  "relation_counts": {
+    "partial_overlap": 32,
+    "broad_topic": 19,
+    "unrelated": 60
+  },
+  "decision_counts": {
+    "do_not_reuse": 111
+  },
+  "by_source": {
+    "semantic_similarity_discovery_openai_strict": {
+      "pairs": 45,
+      "safe_to_reuse": 0,
+      "judge_required": 0,
+      "do_not_reuse": 45,
+      "relation_counts": {
+        "partial_overlap": 21,
+        "unrelated": 24
+      }
+    },
+    "semantic_similarity_discovery_mixed_strict": {
+      "pairs": 66,
+      "safe_to_reuse": 0,
+      "judge_required": 0,
+      "do_not_reuse": 66,
+      "relation_counts": {
+        "partial_overlap": 11,
+        "broad_topic": 19,
+        "unrelated": 36
+      }
+    }
+  }
+}

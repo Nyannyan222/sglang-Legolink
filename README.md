@@ -44,6 +44,12 @@ safe reuse eligibility.
   Lexical overlap is only a prefilter; embeddings and optional LLM judging
   provide the semantic signal when `OPENAI_API_KEY` is available.
 
+- `scripts/build_semantic_reuse_candidate_eval.py`
+  Converts semantic-similarity candidates into reuse decisions. Embedding
+  similarity is treated as candidate discovery only; relation type,
+  same-answer utility, judge score, and exact content hashes decide whether a
+  pair is actually safe to reuse.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -205,6 +211,11 @@ safe reuse eligibility.
 
 - `benchmark_results/semantic_similarity_discovery_mixed_strict/`
   Strict semantic-similarity discovery outputs over mixed-category data.
+
+- `benchmark_results/semantic_reuse_candidate_eval/`
+  Reuse-candidate evaluation over the strict semantic-similarity outputs. The
+  current result rejects all 111 candidate pairs as not safe to reuse, because
+  they are only partial-overlap, broad-topic, or unrelated matches.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
