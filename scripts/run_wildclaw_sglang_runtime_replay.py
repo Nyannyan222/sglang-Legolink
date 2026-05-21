@@ -193,6 +193,8 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path]:
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = args.output_dir / f"wildclaw_sglang_runtime_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    answers_dir = run_dir / "answers"
+    answers_dir.mkdir(parents=True, exist_ok=True)
     murl = args.metrics_url or metrics_url(args.base_url)
 
     results: list[dict[str, Any]] = []
@@ -251,6 +253,8 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path]:
                 if prompt_tokens is not None and cached_tokens is not None
                 else None
             )
+            answer_path = answers_dir / f"{hashlib.sha256((row.get('id', '') + str(replay_index)).encode('utf-8')).hexdigest()[:16]}.txt"
+            answer_path.write_text(answer if answer else error, encoding="utf-8", newline="\n")
 
             record: dict[str, Any] = {
                 "created_at": now_iso(),
@@ -268,6 +272,7 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path]:
                 "estimated_prefill_tokens": estimated_prefill_tokens,
                 "latency_s": round(elapsed, 4),
                 "answer_chars": len(answer),
+                "answer_path": answer_path.as_posix(),
                 "error": error,
                 "flushed_cache_before": flushed_cache,
                 "flush_error": flush_error,

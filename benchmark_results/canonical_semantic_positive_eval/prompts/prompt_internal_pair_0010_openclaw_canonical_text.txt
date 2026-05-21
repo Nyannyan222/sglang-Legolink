@@ -1,0 +1,20 @@
+You are validating whether a semantic sub-context preserves answer utility.
+
+Return JSON only with this schema:
+{"intent":"<one label>","key_facts":["short phrases from the sub-context"],"adds_new_facts":false}
+
+Choose exactly one intent label:
+- save_results: the sub-context instructs where/how to save results or output files.
+- search_budget_limit: the sub-context limits the number of searches.
+- generic_instruction: any other general instruction.
+
+Rules:
+- Do not copy the list of labels into the intent field.
+- If the sub-context says "save", choose save_results.
+- If the sub-context says "searches must not exceed", choose search_budget_limit.
+- Use only facts present in the sub-context.
+
+Classify the instruction intent using only the sub-context below.
+
+Sub-context:
+<NUM>. the total number of searches must not exceed <NUM>.

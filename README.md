@@ -76,6 +76,14 @@ safe reuse eligibility.
   contains raw parameterized blocks, repeated canonical templates, and repeated
   exact reusable canonical blocks for cached-token and latency measurement.
 
+- `scripts/prepare_canonical_semantic_positive_eval.py`
+  Builds a three-way comparison manifest for semantic-positive pairs: original
+  raw text, SGLang exact repeat, and OpenClaw canonical text.
+
+- `scripts/evaluate_canonical_semantic_correctness.py`
+  Validates canonicalization correctness by checking answer equivalence,
+  evidence preservation, no hallucinated facts, and a rule-based judge score.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -265,9 +273,15 @@ safe reuse eligibility.
   positive pairs, and exports 7 parameterized template review candidates.
 
 - `benchmark_results/canonical_text_sglang_replay/`
-  Canonical-text SGLang replay manifest and runtime attempt. The manifest has
-  20 rows, but the current local runtime attempt has 20 errors because Docker
-  Desktop/SGLang was not running.
+  Canonical-text SGLang replay manifest and runtime result. The successful
+  local run has 20 rows, 0 errors, and 98-99% cached ratio on repeated
+  canonical text conditions.
+
+- `benchmark_results/canonical_semantic_positive_eval/`
+  Semantic-positive canonicalization evaluation over two different-raw-text
+  pairs. The successful local SGLang run has 12 rows, 0 errors, 99.5% cached
+  ratio for OpenClaw canonical repeat, and 4/4 correctness judge scores for
+  both semantic pairs.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
