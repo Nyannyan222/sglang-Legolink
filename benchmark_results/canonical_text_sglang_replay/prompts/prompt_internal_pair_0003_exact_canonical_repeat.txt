@@ -1,0 +1,6 @@
+You are replaying a WildClaw semantic sub-context for cache measurement.
+Sub-context type: exact canonical prompt-internal text
+
+``` total number of searches: <number> search 1: <query> finding: <one-sentence summary> search 2: <query> finding: <one-sentence summary> ... final answer: first introduced in version: <version> corresponding pr: <pr number> evidence chain: <evidence 1: page title + key conclusion + url> <evidence 2: page title + key conclusion + url> reasoning: <use 3-5 sentences to explain why these pieces of evidence are sufficient to support the final answer> ```
+
+Acknowledge in one short sentence.

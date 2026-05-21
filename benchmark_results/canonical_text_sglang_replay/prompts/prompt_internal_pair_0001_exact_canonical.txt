@@ -1,0 +1,6 @@
+You are replaying a WildClaw semantic sub-context for cache measurement.
+Sub-context type: exact canonical prompt-internal text
+
+please provide the final answer and output a complete evidence chain proving your conclusion.
+
+Acknowledge in one short sentence.

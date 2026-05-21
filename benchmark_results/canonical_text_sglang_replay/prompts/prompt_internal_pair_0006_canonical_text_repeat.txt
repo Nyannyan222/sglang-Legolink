@@ -1,0 +1,6 @@
+You are replaying a WildClaw semantic sub-context for cache measurement.
+Sub-context type: canonical template text
+
+save the results into <CODE>.
+
+Acknowledge in one short sentence.

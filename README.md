@@ -71,6 +71,11 @@ safe reuse eligibility.
   blocks. Exact repeated instruction blocks become safe positives, while
   parameterized template matches are exported for judge/manual review.
 
+- `scripts/prepare_canonical_text_sglang_replay.py`
+  Builds an SGLang replay manifest from `canonical_text` fields. The manifest
+  contains raw parameterized blocks, repeated canonical templates, and repeated
+  exact reusable canonical blocks for cached-token and latency measurement.
+
 - `scripts/prepare_field_function_subcontexts.py`
   Builds field/function-first sub-contexts from WildClaw/OpenClaw context
   fields such as user prompt, tool definitions, tool history output,
@@ -258,6 +263,11 @@ safe reuse eligibility.
   Finer segmentation of WildClaw prompt fields. The current run scans 60 tasks,
   builds 625 prompt-internal blocks, finds 3 safe exact instruction-template
   positive pairs, and exports 7 parameterized template review candidates.
+
+- `benchmark_results/canonical_text_sglang_replay/`
+  Canonical-text SGLang replay manifest and runtime attempt. The manifest has
+  20 rows, but the current local runtime attempt has 20 errors because Docker
+  Desktop/SGLang was not running.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
