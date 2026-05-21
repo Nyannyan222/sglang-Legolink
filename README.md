@@ -91,6 +91,13 @@ safe reuse eligibility.
   are split internally, and each row carries SGLang-oriented metadata for
   independent prefill/cache/reuse.
 
+- `scripts/llm_trace_field_segmenter.py`
+  Uses an OpenAI-compatible LLM to classify a complete WildClaw/OpenClaw agent
+  trace into field/function sub-contexts first: user prompt, tool definitions,
+  tool history output, conversation history, workspace evidence, and task
+  metadata. Offline auto mode falls back to deterministic marked-block
+  classification so the output schema and validation can still run locally.
+
 - `scripts/run_block_isolated_subcontext_prototype.py`
   Runs a runtime-facing prototype where each field/function sub-context is an
   independent prefill/cache unit and the simulated attention contract allows
@@ -187,6 +194,11 @@ safe reuse eligibility.
   Design notes for splitting context by field/function first and targeting
   SGLang sub-context blocks with no pairwise attention.
 
+- `docs/llm_trace_field_segmentation.md`
+  Documents the complete-trace LLM field segmentation step: trace blocks are
+  classified into user-prompt/tool-definition/tool-history/conversation/
+  workspace/metadata fields before any length-based internal splitting.
+
 - `docs/block_isolated_runtime_prototype.md`
   Runtime-facing proof plan for independent sub-context prefill/cache and
   block-isolated attention before patching SGLang internals.
@@ -282,6 +294,15 @@ safe reuse eligibility.
   pairs. The successful local SGLang run has 12 rows, 0 errors, 99.5% cached
   ratio for OpenClaw canonical repeat, and 4/4 correctness judge scores for
   both semantic pairs.
+
+- `benchmark_results/wildclaw_llm_trace_field_segmentation/`
+  Complete-trace field segmentation smoke output. The current local run uses
+  the offline fallback because no OpenAI/OpenRouter key is set; the same script
+  runs true LLM classification when an API key is provided.
+
+- `benchmark_results/wildclaw_llm_trace_field_segmentation_validation/`
+  Validation report for the trace-field sub-context contract. The current
+  27-row local smoke output has 0 failed checks.
 
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
