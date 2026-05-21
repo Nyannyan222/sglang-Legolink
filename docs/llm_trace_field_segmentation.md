@@ -74,7 +74,7 @@ When no API key is available, `--mode auto` falls back to a deterministic field
 classifier based on the marked trace block metadata. This is not the final LLM
 result, but it lets the pipeline and validation run locally.
 
-Current local smoke result:
+Offline local smoke result:
 
 ```text
 Rows: 27
@@ -85,6 +85,30 @@ Validation failed checks: 0
 The local SGLang `Qwen/Qwen2.5-0.5B-Instruct` endpoint was reachable, but it did
 not reliably return the required strict JSON for this extraction task. Use a
 stronger OpenAI/OpenRouter model for the formal LLM field segmentation run.
+
+## OpenAI LLM Run
+
+The formal OpenAI-backed run completed on 2026-05-21 using `gpt-4.1-mini`:
+
+```text
+Tasks: 3
+Rows: 12
+Used LLM: True
+Validation failed checks: 0
+```
+
+Outputs:
+
+```text
+benchmark_results/wildclaw_llm_trace_field_segmentation_openai/
+benchmark_results/wildclaw_llm_trace_field_segmentation_openai_validation/
+```
+
+The output is more selective than the offline fallback: it groups or omits
+non-evidence blocks instead of mechanically exporting every workspace file.
+This is expected for an LLM field classifier, but the selected rows should still
+be manually reviewed before being treated as the final semantic-independent
+context set.
 
 ## Why This Helps
 

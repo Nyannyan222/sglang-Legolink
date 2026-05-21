@@ -304,6 +304,15 @@ safe reuse eligibility.
   Validation report for the trace-field sub-context contract. The current
   27-row local smoke output has 0 failed checks.
 
+- `benchmark_results/wildclaw_llm_trace_field_segmentation_openai/`
+  OpenAI-backed LLM trace field segmentation over 3 WildClaw tasks using
+  `gpt-4.1-mini`. The run produced 12 field/function sub-context rows with
+  `llm_trace_field_segmentation` method.
+
+- `benchmark_results/wildclaw_llm_trace_field_segmentation_openai_validation/`
+  Validation report for the OpenAI-backed trace-field output. The current
+  12-row LLM output has 0 failed checks and is SGLang-metadata-ready.
+
 - `benchmark_results/wildclaw_similarity_task_selection/`
   Candidate task/workspace selection results for future similarity pilots.
 

@@ -1,0 +1,36 @@
+{
+  "row_count": 12,
+  "unique_ids": 12,
+  "unique_prefill_unit_ids": 12,
+  "unique_cache_keys": 11,
+  "field_counts": {
+    "conversation_history": 3,
+    "task_metadata": 3,
+    "tool_definitions": 2,
+    "user_prompt": 3,
+    "workspace_evidence": 1
+  },
+  "task_field_counts": {
+    "04_Search_Retrieval_task_2_conflicting_handling": {
+      "conversation_history": 1,
+      "task_metadata": 1,
+      "user_prompt": 1,
+      "workspace_evidence": 1
+    },
+    "04_Search_Retrieval_task_4_efficient_search": {
+      "conversation_history": 1,
+      "task_metadata": 1,
+      "tool_definitions": 1,
+      "user_prompt": 1
+    },
+    "04_Search_Retrieval_task_5_fuzzy_search": {
+      "conversation_history": 1,
+      "task_metadata": 1,
+      "tool_definitions": 1,
+      "user_prompt": 1
+    }
+  },
+  "internally_split_rows": 0,
+  "failed_checks": 0,
+  "passed_checks": 19
+}

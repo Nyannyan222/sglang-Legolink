@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .env
 .env.local
+local_secrets/
 external/sglang/
 external/WildClawBench/
 benchmark_results/wildclaw_mixed_category_eval_runs/
