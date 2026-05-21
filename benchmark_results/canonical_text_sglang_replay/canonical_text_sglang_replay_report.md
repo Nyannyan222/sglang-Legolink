@@ -3,9 +3,9 @@
 - Manifest: `benchmark_results/canonical_text_sglang_replay/canonical_text_sglang_runtime_manifest.jsonl`
 - Manifest rows: 20
 - Prompt directory: `benchmark_results/canonical_text_sglang_replay/prompts/`
-- Runtime attempt: `benchmark_results/canonical_text_sglang_replay/runtime_runs/wildclaw_sglang_runtime_20260521_152152/`
+- Successful runtime run: `benchmark_results/canonical_text_sglang_replay/runtime_runs/wildclaw_sglang_runtime_20260521_155137/`
 - Runtime rows: 20
-- Runtime errors: 20
+- Runtime errors: 0
 
 ## Purpose
 
@@ -21,17 +21,27 @@ sub-contexts:
 If SGLang is running, the repeat rows should show higher `cached_tokens` and
 lower estimated prefill tokens for identical canonical prompts.
 
-## Current Runtime Status
+## Runtime Result
 
-The manifest was generated successfully, but local runtime measurement could not
-complete because no SGLang endpoint was available:
+After Docker Desktop and the local SGLang container were started, the canonical
+text replay completed successfully with 20/20 completed rows.
 
-- `http://127.0.0.1:8000/v1/models`: connection refused.
-- `http://127.0.0.1:30000/v1/models`: connection refused.
-- Docker Desktop engine was unavailable: `dockerDesktopLinuxEngine` pipe not found.
+Key observations from
+`benchmark_results/canonical_text_sglang_replay/canonical_text_sglang_runtime_summary.md`:
 
-Therefore the current CSV records the failed runtime attempt only. It does not
-contain valid cached-token or latency measurements yet.
+| condition | rows | avg prompt | avg cached | avg prefill | cached ratio | avg latency s |
+| --- | --- | --- | --- | --- | --- | --- |
+| `canonical_text` | 3 | 66 | 57.7 | 8.3 | 87.4% | 0.1869 |
+| `canonical_text_repeat` | 3 | 66 | 65 | 1 | 98.5% | 0.1740 |
+| `exact_canonical_text` | 3 | 108.7 | 47.7 | 61 | 43.9% | 0.1110 |
+| `exact_canonical_text_repeat` | 3 | 108.7 | 107.7 | 1 | 99.1% | 0.1412 |
+| `block_canonical_text` | 1 | 63 | 45 | 18 | 71.4% | 0.1633 |
+| `block_canonical_text_repeat` | 1 | 63 | 62 | 1 | 98.4% | 0.1643 |
+
+The repeat rows show that identical canonical text can be reused by SGLang's
+native prefix cache. This still does not implement semantic non-prefix KV reuse;
+it validates the canonical-text replay path and confirms that canonicalization
+can create stable prefix-cacheable inputs.
 
 ## Run Commands
 
