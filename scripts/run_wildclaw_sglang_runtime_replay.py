@@ -130,16 +130,26 @@ def chat_completion(
     max_tokens: int,
     timeout: float,
     api_key: str | None,
+    openclaw_metadata: dict[str, Any] | None = None,
+    extra_key: str | None = None,
 ) -> dict[str, Any]:
     endpoint = normalize_base_url(base_url) + "/chat/completions"
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-            "max_tokens": max_tokens,
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }
+    if extra_key:
+        body["extra_key"] = extra_key
+    if openclaw_metadata:
+        body["openclaw_sub_context"] = openclaw_metadata
+        body["custom_labels"] = {
+            "openclaw_sub_context_id": str(openclaw_metadata.get("sub_context_id", "")),
+            "openclaw_context_field": str(openclaw_metadata.get("context_field", "")),
+            "openclaw_reuse_policy": str(openclaw_metadata.get("reuse_policy", "")),
         }
-    ).encode("utf-8")
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -229,6 +239,8 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path]:
                     max_tokens=args.max_tokens,
                     timeout=args.timeout,
                     api_key=args.api_key,
+                    openclaw_metadata=row.get("openclaw_metadata") if isinstance(row.get("openclaw_metadata"), dict) else None,
+                    extra_key=str(row.get("extra_key") or row.get("canonical_key") or ""),
                 )
                 usage = data.get("usage") or {}
                 answer = (
@@ -261,6 +273,11 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path]:
                 "manifest_id": row.get("id", ""),
                 "task_id": row.get("task_id", ""),
                 "condition": row.get("condition", ""),
+                "sub_context_id": row.get("sub_context_id", ""),
+                "context_field": row.get("context_field", ""),
+                "canonical_key": row.get("canonical_key", ""),
+                "reuse_policy": row.get("reuse_policy", ""),
+                "metadata_sent": bool(row.get("openclaw_metadata")),
                 "replay_index": replay_index,
                 "prompt_path": row.get("prompt_path", ""),
                 "prompt_hash": prompt_hash,

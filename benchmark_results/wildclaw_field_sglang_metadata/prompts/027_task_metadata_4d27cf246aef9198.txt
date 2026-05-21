@@ -1,0 +1,21 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_4_efficient_search__task_metadata__task_metadata_eb9ab15dca__part_01
+context_field: task_metadata
+reuse_policy: exact
+canonical_key: field:task_metadata:routing_and_selection_metadata:f1f2dfe2ceaa514bead213e8
+
+TEXT:
+{
+  "task_id": "04_Search_Retrieval_task_4_efficient_search",
+  "category": "04_Search_Retrieval",
+  "task_name": "Search Efficiency Test",
+  "timeout_seconds": 600,
+  "workspace_path": "workspace/04_Search_Retrieval/task_4_efficient_search",
+  "env": [
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "JUDGE_MODEL"
+  ]
+}

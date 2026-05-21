@@ -1,0 +1,15 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_2_conflicting_handling__workspace_evidence__source_files_5_exec_04_search_retrieval_task_2_conflicting_handling_laws_law13_f55ac26baa__part_02
+context_field: workspace_evidence
+reuse_policy: exact
+canonical_key: field:workspace_evidence:workspace_document_or_evidence:e700379a22a67224c243953f
+
+TEXT:
+各自职责范围内对生态环境保护工作实施监督管理。
+第十八条　国家建立健全生态环境保护责任清单制度，明确国务院有关部门和地方人民政府有关部门的生态环境保护监督管理职责。
+第十九条　省、市、县、乡依法建立健全河湖长制、林长制。各级河湖长负责本行政区域江河湖泊管理和保护相关工作；各级林长负责本行政区域森林草原资源保护发展相关工作。
+第二十条　县级以上地方人民政府根据实际需要建立生态环境保护工作协调联动机制
+
+[TRUNCATED_TRACE_BLOCK]

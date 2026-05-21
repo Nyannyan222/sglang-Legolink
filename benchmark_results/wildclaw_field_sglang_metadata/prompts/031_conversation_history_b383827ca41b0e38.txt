@@ -1,0 +1,16 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_5_fuzzy_search__conversation_history__task_expected_behavior_39c07072ce__part_01
+context_field: conversation_history
+reuse_policy: exact
+canonical_key: field:conversation_history:prior_user_assistant_state:f749fa564ad8f2139f092b53
+
+TEXT:
+The agent should complete the following tasks:
+
+1. Find multiple papers from that period that transferred the DeepSeek-R1 approach to visual perception tasks.
+
+2. Among those papers, identify the one whose first author’s last name is Liu.
+
+3. Find the corresponding GitHub repository, whose star count should be above 2k.

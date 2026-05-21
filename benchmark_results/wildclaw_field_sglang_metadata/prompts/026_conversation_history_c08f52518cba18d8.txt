@@ -1,0 +1,19 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_4_efficient_search__conversation_history__conversation_history_2324f63cb1__part_01
+context_field: conversation_history
+reuse_policy: exact
+canonical_key: field:conversation_history:prior_user_assistant_state:5280e95d34ec7583c8d7c5b9
+
+TEXT:
+[
+  {
+    "role": "user",
+    "content": "Question: \nFrom which Python version was `pathlib.Path.walk()` added to the standard library?\nPlease further determine: what is the CPython GitHub Pull Request number that merged it?\nPlease provide the final answer and output a complete evidence chain proving your conclusion.\n\nMandatory Requirements:\n\n1. The total number of searches must not exceed 4.\n\n2. The answer may only be based on publicly searchable webpages.\n\n3. The answer must explicitly state:\n    (1) the total number of searches performed;\n    (2) the query used for each search.\n\n4. A complete evidence chain must be provided.\n\n5. If the answer cannot be confirmed within the search budget, the task must be terminated, and you must explicitly state “Unable to confirm.” Do not guess.\n\n6. Write your results into `/tmp_workspace/results/results.md`.\n\nOutput Format (Please strictly follow the format below):\n```\nTotal number of searches: <number>\n\nSearch 1: <query>\nFinding: <one-sentence summary>\n\nSearch 2: <query>\nFinding: <one-sentence summary>\n\n...\n\nFinal Answer:\n\nFirst introduced in version: <version>\n\nCorresponding PR: <PR number>\n\nEvidence Chain:\n\n<Evidence 1: page title + key conclusion + URL>\n\n<Evidence 2: page title + key conclusion + URL>\n\nReasoning:\n<Use 3–5 sentences to explain why these pieces of evidence are sufficient to support the final answer>\n```"
+  },
+  {
+    "role": "assistant",
+    "content": "I will inspect local workspace files, use search when needed, and write the final result to the requested path."
+  }
+]
