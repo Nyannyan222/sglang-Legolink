@@ -1,0 +1,14 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_2_conflicting_handling__conversation_history__task_expected_behavior_39c07072ce__part_01
+context_field: conversation_history
+reuse_policy: exact
+canonical_key: field:conversation_history:prior_user_assistant_state:5d3f807c0f0a3b53db6f97d6
+
+TEXT:
+1. The agent should first read the locally stored legal provisions to identify the basis for resolving the issue.
+
+2. The agent should then recognize that some of the provisions may be outdated and verify them on the Internet.
+
+3. Finally, the agent needs to resolve any conflicts between the local information and the online information, and return the correct answer.

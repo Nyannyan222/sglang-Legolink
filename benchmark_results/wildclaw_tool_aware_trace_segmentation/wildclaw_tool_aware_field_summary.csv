@@ -1,0 +1,9 @@
+context_field,tool_name,tool_type,tool_reuse_policy_hint,rows
+conversation_history,,,,6
+task_metadata,,,,3
+tool_definitions,,,,3
+tool_history_output,read_file,filesystem_read,candidate_reuse_after_content_or_same_answer_judge,3
+tool_history_output,web_search,retrieval,candidate_reuse_after_content_or_same_answer_judge,3
+tool_history_output,write_file,filesystem_write,no_reuse_mutating_tool,3
+user_prompt,,,,3
+workspace_evidence,,,,15

@@ -148,6 +148,8 @@ def chat_completion(
             "openclaw_sub_context_id": str(openclaw_metadata.get("sub_context_id", "")),
             "openclaw_context_field": str(openclaw_metadata.get("context_field", "")),
             "openclaw_reuse_policy": str(openclaw_metadata.get("reuse_policy", "")),
+            "openclaw_tool_name": str(openclaw_metadata.get("tool_name", "")),
+            "openclaw_tool_type": str(openclaw_metadata.get("tool_type", "")),
         }
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -277,6 +279,10 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path]:
                 "context_field": row.get("context_field", ""),
                 "canonical_key": row.get("canonical_key", ""),
                 "reuse_policy": row.get("reuse_policy", ""),
+                "tool_name": row.get("tool_name", ""),
+                "tool_type": row.get("tool_type", ""),
+                "tool_call_id": row.get("tool_call_id", ""),
+                "is_mutating_tool": row.get("is_mutating_tool", ""),
                 "metadata_sent": bool(row.get("openclaw_metadata")),
                 "replay_index": replay_index,
                 "prompt_path": row.get("prompt_path", ""),

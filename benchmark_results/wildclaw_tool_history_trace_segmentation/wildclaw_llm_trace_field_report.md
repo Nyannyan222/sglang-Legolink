@@ -35,18 +35,18 @@ This artifact uses an LLM-style field classifier to split complete agent trace/t
 | `04_Search_Retrieval_task_2_conflicting_handling` | `conversation_history` | `heuristic_trace_field_fallback` | 2 | 1679 | 839.5 |
 | `04_Search_Retrieval_task_2_conflicting_handling` | `task_metadata` | `heuristic_trace_field_fallback` | 1 | 375 | 375.0 |
 | `04_Search_Retrieval_task_2_conflicting_handling` | `tool_definitions` | `heuristic_trace_field_fallback` | 1 | 21 | 21.0 |
-| `04_Search_Retrieval_task_2_conflicting_handling` | `tool_history_output` | `heuristic_trace_field_fallback` | 1 | 1956 | 1956.0 |
+| `04_Search_Retrieval_task_2_conflicting_handling` | `tool_history_output` | `heuristic_trace_field_fallback` | 1 | 2420 | 2420.0 |
 | `04_Search_Retrieval_task_2_conflicting_handling` | `user_prompt` | `heuristic_trace_field_fallback` | 1 | 1088 | 1088.0 |
 | `04_Search_Retrieval_task_2_conflicting_handling` | `workspace_evidence` | `heuristic_trace_field_fallback` | 15 | 32066 | 2137.7 |
 | `04_Search_Retrieval_task_4_efficient_search` | `conversation_history` | `heuristic_trace_field_fallback` | 2 | 1868 | 934.0 |
 | `04_Search_Retrieval_task_4_efficient_search` | `task_metadata` | `heuristic_trace_field_fallback` | 1 | 330 | 330.0 |
 | `04_Search_Retrieval_task_4_efficient_search` | `tool_definitions` | `heuristic_trace_field_fallback` | 1 | 21 | 21.0 |
-| `04_Search_Retrieval_task_4_efficient_search` | `tool_history_output` | `heuristic_trace_field_fallback` | 1 | 1003 | 1003.0 |
+| `04_Search_Retrieval_task_4_efficient_search` | `tool_history_output` | `heuristic_trace_field_fallback` | 1 | 1455 | 1455.0 |
 | `04_Search_Retrieval_task_4_efficient_search` | `user_prompt` | `heuristic_trace_field_fallback` | 1 | 1340 | 1340.0 |
 | `04_Search_Retrieval_task_5_fuzzy_search` | `conversation_history` | `heuristic_trace_field_fallback` | 2 | 847 | 423.5 |
 | `04_Search_Retrieval_task_5_fuzzy_search` | `task_metadata` | `heuristic_trace_field_fallback` | 1 | 319 | 319.0 |
 | `04_Search_Retrieval_task_5_fuzzy_search` | `tool_definitions` | `heuristic_trace_field_fallback` | 1 | 21 | 21.0 |
-| `04_Search_Retrieval_task_5_fuzzy_search` | `tool_history_output` | `heuristic_trace_field_fallback` | 1 | 975 | 975.0 |
+| `04_Search_Retrieval_task_5_fuzzy_search` | `tool_history_output` | `heuristic_trace_field_fallback` | 1 | 1415 | 1415.0 |
 | `04_Search_Retrieval_task_5_fuzzy_search` | `user_prompt` | `heuristic_trace_field_fallback` | 1 | 313 | 313.0 |
 
 ## Runtime Interpretation

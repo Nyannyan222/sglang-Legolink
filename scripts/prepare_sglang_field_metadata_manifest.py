@@ -77,10 +77,24 @@ def canonical_key(row: dict[str, Any], canon: str) -> str:
     field = str(row.get("context_field", "unknown_field"))
     role = str(row.get("functional_role", "unknown_role"))
     digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:24]
+    if field == "tool_history_output" and str(row.get("tool_name", "")).strip():
+        tool_type = str(row.get("tool_type") or "unknown_tool_type")
+        tool_name = str(row.get("tool_name") or "unknown_tool")
+        return f"field:{field}:tool:{tool_type}:{tool_name}:{digest}"
     return f"field:{field}:{role}:{digest}"
 
 
+def as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
 def reuse_policy(row: dict[str, Any], canon: str) -> str:
+    if row.get("context_field") == "tool_history_output" and as_bool(row.get("is_mutating_tool")):
+        return "no_reuse"
     if not canon:
         return "no_reuse"
     if normalize_text(str(row.get("sub_context", ""))) == canon:
@@ -91,16 +105,27 @@ def reuse_policy(row: dict[str, Any], canon: str) -> str:
 def prompt_text(metadata: dict[str, Any]) -> str:
     text = metadata["canonical_text"] if metadata["reuse_policy"] == "canonical" else metadata["raw_text"]
     text = strip_trailing_line_spaces(str(text)).strip()
-    return (
-        "OpenClaw field sub-context prefill request.\n"
-        "Use this block as an independent context unit.\n\n"
-        f"sub_context_id: {metadata['sub_context_id']}\n"
-        f"context_field: {metadata['context_field']}\n"
-        f"reuse_policy: {metadata['reuse_policy']}\n"
-        f"canonical_key: {metadata['canonical_key']}\n\n"
-        "TEXT:\n"
-        f"{text}"
+    header_lines = [
+        "OpenClaw field sub-context prefill request.",
+        "Use this block as an independent context unit.",
+        "",
+        f"sub_context_id: {metadata['sub_context_id']}",
+        f"context_field: {metadata['context_field']}",
+    ]
+    if metadata.get("tool_name"):
+        header_lines.append(f"tool_name: {metadata['tool_name']}")
+    if metadata.get("tool_type"):
+        header_lines.append(f"tool_type: {metadata['tool_type']}")
+    header_lines.extend(
+        [
+            f"reuse_policy: {metadata['reuse_policy']}",
+            f"canonical_key: {metadata['canonical_key']}",
+            "",
+            "TEXT:",
+            text,
+        ]
     )
+    return "\n".join(header_lines)
 
 
 def build_metadata(row: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +146,14 @@ def build_metadata(row: dict[str, Any]) -> dict[str, Any]:
         "functional_role": str(row.get("functional_role", "")),
         "source_method": str(row.get("method", "")),
         "content_hash": str(row.get("content_hash") or content_hash(raw_text)),
+        "tool_name": str(row.get("tool_name", "")),
+        "tool_type": str(row.get("tool_type", "")),
+        "tool_call_id": str(row.get("tool_call_id", "")),
+        "tool_step": str(row.get("tool_step", "")),
+        "tool_input_hash": str(row.get("tool_input_hash", "")),
+        "tool_output_hash": str(row.get("tool_output_hash", "")),
+        "is_mutating_tool": as_bool(row.get("is_mutating_tool")) if str(row.get("tool_name", "")).strip() else "",
+        "tool_reuse_policy_hint": str(row.get("tool_reuse_policy_hint", "")),
     }
 
 
@@ -149,6 +182,10 @@ def build(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str
                 "canonical_key": meta["canonical_key"],
                 "canonical_text": meta["canonical_text"],
                 "reuse_policy": meta["reuse_policy"],
+                "tool_name": meta.get("tool_name", ""),
+                "tool_type": meta.get("tool_type", ""),
+                "tool_call_id": meta.get("tool_call_id", ""),
+                "is_mutating_tool": meta.get("is_mutating_tool", ""),
                 "extra_key": meta["canonical_key"],
                 "openclaw_metadata": meta,
             }
@@ -158,8 +195,12 @@ def build(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str
 
 def write_report(path: Path, metadata_rows: list[dict[str, Any]], manifest_rows: list[dict[str, Any]], args: argparse.Namespace) -> None:
     counts: dict[str, int] = {}
+    tool_counts: dict[tuple[str, str, str], int] = {}
     for row in metadata_rows:
         counts[row["context_field"]] = counts.get(row["context_field"], 0) + 1
+        if row.get("context_field") == "tool_history_output" and row.get("tool_name"):
+            key = (str(row.get("tool_name", "")), str(row.get("tool_type", "")), str(row.get("reuse_policy", "")))
+            tool_counts[key] = tool_counts.get(key, 0) + 1
     lines = [
         "# SGLang Field Metadata Manifest",
         "",
@@ -174,12 +215,17 @@ def write_report(path: Path, metadata_rows: list[dict[str, Any]], manifest_rows:
     ]
     for field, count in sorted(counts.items()):
         lines.append(f"| `{field}` | {count} |")
+    if tool_counts:
+        lines.extend(["", "## Tool Counts", "", "| tool_name | tool_type | reuse_policy | rows |", "| --- | --- | --- | ---: |"])
+        for (tool_name, tool_type, policy), count in sorted(tool_counts.items()):
+            lines.append(f"| `{tool_name}` | `{tool_type}` | `{policy}` | {count} |")
+
     lines.extend(
         [
             "",
             "## Metadata Contract",
             "",
-            "Each manifest row carries `openclaw_metadata` with `sub_context_id`, `context_field`, `raw_text`, `canonical_text`, `canonical_key`, `attention_policy`, and `reuse_policy`.",
+            "Each manifest row carries `openclaw_metadata` with `sub_context_id`, `context_field`, `raw_text`, `canonical_text`, `canonical_key`, `attention_policy`, `reuse_policy`, and optional tool identity fields.",
             "The runtime replay runner forwards this metadata into the SGLang OpenAI-compatible request body.",
         ]
     )

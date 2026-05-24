@@ -1,0 +1,17 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_2_conflicting_handling__workspace_evidence__source_files_6_exec_04_search_retrieval_task_2_conflicting_handling_laws_law14_6b4058c532__part_02
+context_field: workspace_evidence
+reuse_policy: exact
+canonical_key: field:workspace_evidence:workspace_document_or_evidence:da833709db4f3c81ad72b280
+
+TEXT:
+要求的勘查、开采活动，已设立的矿业权不符合管控要求的，应当依法有序退出。
+第二十七条　矿业权可以依法转让或者出资、抵押等，国家另有规定或者矿业权出让合同另有约定的除外。
+矿业权转让的，矿业权出让合同和矿业权登记簿所载明的权利、义务随之转移，国家另有规定或者矿业权出让、转让合同另有约定的除外。
+矿业权转让的具体管理办法由国务院制定。
+第二十八条　有下列情形之一的，无需取得探矿权：
+（一）国家出资勘查
+
+[TRUNCATED_TRACE_BLOCK]

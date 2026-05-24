@@ -64,6 +64,9 @@ def build_tool_history(row: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "step": 1,
             "tool_name": "read_file",
+            "tool_type": "filesystem_read",
+            "tool_call_id": f"{task_id}:tool:01:read_file",
+            "is_mutating_tool": False,
             "tool_call": {"path": file_path, "max_chars": 900},
             "tool_output": file_text,
             "semantic_role": "workspace evidence read from local files",
@@ -71,6 +74,9 @@ def build_tool_history(row: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "step": 2,
             "tool_name": "web_search",
+            "tool_type": "retrieval",
+            "tool_call_id": f"{task_id}:tool:02:web_search",
+            "is_mutating_tool": False,
             "tool_call": {"query": query},
             "tool_output": (
                 "Search results indicate that the local evidence should be checked "
@@ -82,6 +88,9 @@ def build_tool_history(row: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "step": 3,
             "tool_name": "write_file",
+            "tool_type": "filesystem_write",
+            "tool_call_id": f"{task_id}:tool:03:write_file",
+            "is_mutating_tool": True,
             "tool_call": {"path": "/tmp_workspace/results/results.md"},
             "tool_output": "Write operation prepared for the requested result path.",
             "semantic_role": "output artifact operation",

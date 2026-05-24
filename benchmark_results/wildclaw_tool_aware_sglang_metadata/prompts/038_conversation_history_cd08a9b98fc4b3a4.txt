@@ -1,0 +1,19 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_5_fuzzy_search__conversation_history__conversation_history_2324f63cb1__part_01
+context_field: conversation_history
+reuse_policy: exact
+canonical_key: field:conversation_history:prior_user_assistant_state:db5270d48d9c239b45934475
+
+TEXT:
+[
+  {
+    "role": "user",
+    "content": "Help me find that paper from 2025 which was among the earlier works to transfer a DeepSeek-R1-like approach to visual perception tasks. I only remember that the first author’s last name was Liu, and their GitHub repository should have more than 2k stars.\nSave the results into `/tmp_workspace/results/results.md`."
+  },
+  {
+    "role": "assistant",
+    "content": "I will inspect local workspace files, use search when needed, and write the final result to the requested path."
+  }
+]

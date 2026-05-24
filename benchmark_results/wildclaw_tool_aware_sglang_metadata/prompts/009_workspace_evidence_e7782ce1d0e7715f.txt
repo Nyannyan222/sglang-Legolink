@@ -1,0 +1,14 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_2_conflicting_handling__workspace_evidence__source_files_1_exec_04_search_retrieval_task_2_conflicting_handling_laws_law1_d_598542a3ed__part_02
+context_field: workspace_evidence
+reuse_policy: exact
+canonical_key: field:workspace_evidence:workspace_document_or_evidence:a0704ce902f9dfc514dc1d37
+
+TEXT:
+等相关信息核验应缴的个人所得税，登记机构办理转移登记时，应当查验与该不动产转让相关的个人所得税的完税凭证。个人转让股权办理变更登记的，市场主体登记机关应当查验与该股权交易相关的个人所得税的完税凭证。
+有关部门依法将纳税人、扣缴义务人遵守本法的情况纳入信用信息系统，并实施联合激励或者惩戒。
+第十六条　各项所得的计算，以人民币为单位。所得为人民币以外的货币的，按照人民币汇率中间价折合成人民币缴纳税款。
+
+[TRUNCATED_TRACE_BLOCK]

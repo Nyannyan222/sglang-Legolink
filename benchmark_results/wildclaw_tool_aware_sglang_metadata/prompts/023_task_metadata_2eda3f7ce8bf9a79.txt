@@ -1,0 +1,21 @@
+OpenClaw field sub-context prefill request.
+Use this block as an independent context unit.
+
+sub_context_id: 04_Search_Retrieval_task_2_conflicting_handling__task_metadata__task_metadata_eb9ab15dca__part_01
+context_field: task_metadata
+reuse_policy: exact
+canonical_key: field:task_metadata:routing_and_selection_metadata:0d120056934cf9de461db079
+
+TEXT:
+{
+  "task_id": "04_Search_Retrieval_task_2_conflicting_handling",
+  "category": "04_Search_Retrieval",
+  "task_name": "Conflicting Information Handling between Local Data and Web",
+  "timeout_seconds": 900,
+  "workspace_path": "workspace/04_Search_Retrieval/task_2_conflicting_handling",
+  "env": [
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "JUDGE_MODEL"
+  ]
+}
