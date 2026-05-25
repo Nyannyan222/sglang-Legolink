@@ -17,6 +17,12 @@ from .runtime_isolation import (
     block_isolation_report,
     build_blocks,
 )
+from .sglang_block_kv import (
+    BlockKVLookupResult,
+    BlockKVRecord,
+    SemanticBlockKVStore,
+    SemanticBlockMetadata,
+)
 from .sglang_bridge import (
     AttentionRange,
     SGLangBlockRuntimePlan,
@@ -35,6 +41,8 @@ __all__ = [
     "AttentionRange",
     "BlockKVEntry",
     "BlockKVLookup",
+    "BlockKVLookupResult",
+    "BlockKVRecord",
     "PrefillBlock",
     "PrefillResult",
     "OrderInvariantBlockKVCache",
@@ -43,6 +51,8 @@ __all__ = [
     "ReuseDecisionEngine",
     "SGLangBlockRuntimePlan",
     "SGLangPrefillRequest",
+    "SemanticBlockKVStore",
+    "SemanticBlockMetadata",
     "SubContext",
     "SubContextRegistry",
     "SubContextSelector",

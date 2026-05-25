@@ -131,14 +131,21 @@ def openclaw_helper() -> str:
         if isinstance(block, dict):
             block_labels = {{
                 "openclaw_prefill_unit_id": block.get("prefill_unit_id"),
-                "openclaw_cache_key": block.get("cache_key"),
-                "openclaw_source_sub_context_id": block.get("source_sub_context_id"),
+                "openclaw_cache_key": block.get("cache_key") or block.get("canonical_key"),
+                "openclaw_canonical_key": block.get("canonical_key") or block.get("cache_key"),
+                "openclaw_content_hash": block.get("content_hash"),
+                "openclaw_reuse_policy": block.get("reuse_policy"),
+                "openclaw_source_sub_context_id": block.get("source_sub_context_id") or block.get("sub_context_id"),
                 "openclaw_context_field": block.get("context_field"),
                 "openclaw_functional_role": block.get("functional_role"),
                 "openclaw_attention_policy": block.get("attention_policy"),
                 "openclaw_cache_scope": block.get("cache_scope"),
                 "openclaw_kv_reuse_granularity": block.get("kv_reuse_granularity"),
                 "openclaw_task_id": block.get("task_id"),
+                "openclaw_tool_name": block.get("tool_name"),
+                "openclaw_tool_type": block.get("tool_type"),
+                "openclaw_tool_call_id": block.get("tool_call_id"),
+                "openclaw_is_mutating_tool": block.get("is_mutating_tool"),
             }}
             for key, value in block_labels.items():
                 if value is not None:
