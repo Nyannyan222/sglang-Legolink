@@ -1,11 +1,12 @@
-"""Runtime-level prototype for independent sub-context prefill/cache.
+"""Compile-phase prototype for independent sub-context prefill/cache.
 
 This is a lightweight proof layer. It does not patch SGLang internals yet; it
-models the block contract that an SGLang implementation should enforce:
+models the EPIC-style compile contract that an SGLang implementation should
+enforce before sparse causal linking:
 
 - each sub-context is a separate prefill unit,
 - each unit has its own cache key,
-- no pairwise attention is allowed between different sub-context blocks.
+- compile has no pairwise attention between different sub-context blocks.
 """
 
 from __future__ import annotations
@@ -15,12 +16,14 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
-
-TOKEN_RE = re.compile(r"[A-Za-z0-9_./:+-]+|[\u4e00-\u9fff]|[^\s]")
+from .token_accounting import TokenUnit
+from .tokenizer import estimate_tokens as estimate_token_count, tokenize_text
 
 
 def estimate_tokens(text: str) -> list[str]:
-    return TOKEN_RE.findall(text)
+    """Backward-compatible alias for the shared tokenizer module."""
+
+    return [str(value) for value in tokenize_text(text)]
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,11 @@ class PrefillBlock:
             context_field=str(row.get("context_field") or ""),
             functional_role=str(row.get("functional_role") or ""),
             text=text,
-            token_count=len(estimate_tokens(text)),
+            # Plan preparation runs before any server exists, so this is the
+            # regex estimator by construction. The runtime recounts every block
+            # with the model's tokenizer when it builds the ResolvedLinkPlan;
+            # these numbers size the plan, they do not decide anything.
+            token_count=estimate_token_count(text).value,
             source_sub_context_id=str(row.get("id") or ""),
             metadata={
                 "task_id": row.get("task_id", ""),
@@ -58,7 +65,11 @@ class PrefillBlock:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        row = asdict(self)
+        # The unit travels with the artifact: a reader must not mistake a
+        # host-side plan estimate for what the model's tokenizer counted.
+        row["token_unit"] = TokenUnit.ESTIMATED.value
+        return row
 
 
 @dataclass(frozen=True)

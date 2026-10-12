@@ -1,0 +1,140 @@
+From 0fd0290436a13b7fe62da69af61c0ebb9a5d8976 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 02:24:54 +0800
+Subject: [PATCH 05/27] Suppress overlap for PIC batches, not for the
+ deployment
+
+PICRuntime.has_link only fires on an extend batch holding exactly one request,
+but the arrival guard rejected any link request on a server with overlap
+scheduling enabled. Every decode step in the deployment then paid for a
+constraint belonging to the link batches: 1,325 decode steps for 10 links in
+the 2026-09-02 local terminus2 run, with decode and sampling strictly
+sequential.
+
+Upstream already suppresses overlap per batch for speculative decoding with
+grammar. PIC now uses the same hook, fencing the PIC batch and its successor so
+neither the previous forward nor the next batch can touch KV the link is
+rewriting or slots it just released. Compile is included: it registers blocks a
+later link consumes and has never run under overlap either.
+
+Off by default behind SGLANG_PIC_PER_BATCH_OVERLAP. It changes how a GPU
+deployment schedules and the measurement that would justify a new default has
+not been run.
+---
+ python/sglang/srt/managers/scheduler.py | 30 +++++++++++++++--
+ python/sglang/srt/pic_runtime.py        | 43 +++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+), 3 deletions(-)
+
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 821ca2c..0bd14ce 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -1616,7 +1616,24 @@ class Scheduler(
+             and len(self.result_queue) > 0
+         )
+ 
+-        return disable_overlap_for_batch or need_grammar_sync
++        # PIC Compile and Link need the same treatment: a synchronous boundary
++        # around their own batch, not around the whole deployment. Fencing the
++        # batch and its successor covers both directions -- the link forward
++        # writes into KV the previous batch may still be reading, and the slots
++        # it releases must not reach the next batch before its result is
++        # processed. Decode batches, which never carry a link plan, keep overlap.
++        from sglang.srt.pic_runtime import (
++            batch_needs_synchronous_boundary,
++            per_batch_overlap_enabled,
++        )
++
++        need_pic_sync = False
++        if per_batch_overlap_enabled():
++            need_pic_sync = batch_needs_synchronous_boundary(
++                batch
++            ) or batch_needs_synchronous_boundary(self.last_batch)
++
++        return disable_overlap_for_batch or need_grammar_sync or need_pic_sync
+ 
+     def process_input_requests(self, recv_reqs: List):
+         now = time.monotonic()
+@@ -1892,6 +1909,7 @@ class Scheduler(
+         from sglang.srt.pic_runtime import (
+             PICRuntimeError,
+             get_pic_link_plan,
++            per_batch_overlap_enabled,
+             validate_pic_link_input_length,
+         )
+ 
+@@ -1906,9 +1924,15 @@ class Scheduler(
+                     raise PICRuntimeError(
+                         "PIC link currently requires chunked prefill to be disabled."
+                     )
+-                if not self.server_args.disable_overlap_schedule:
++                if (
++                    not self.server_args.disable_overlap_schedule
++                    and not per_batch_overlap_enabled()
++                ):
+                     raise PICRuntimeError(
+-                        "PIC link currently requires overlap scheduling to be disabled."
++                        "PIC link currently requires overlap scheduling to be "
++                        "disabled, or SGLANG_PIC_PER_BATCH_OVERLAP=1 so the "
++                        "scheduler drains around PIC batches instead of "
++                        "running the whole deployment without overlap."
+                     )
+                 # Linking overwrites selected KV positions, so it must never
+                 # share prefix-cache slots with another request.
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 0ad5efe..98865b9 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -979,6 +979,49 @@ def get_pic_link_plan(sampling_params: Any) -> Optional[dict[str, Any]]:
+     return link_plan if isinstance(link_plan, dict) else None
+ 
+ 
++def per_batch_overlap_enabled() -> bool:
++    """Whether PIC suppresses overlap per batch instead of per server.
++
++    Linking cannot run while the scheduler overlaps CPU work with the previous
++    batch's forward, so the arrival path rejected any request that arrived on a
++    server with overlap scheduling on. That is a server-wide answer to a
++    per-batch problem: ``PICRuntime.has_link`` only ever fires on an extend
++    batch holding exactly one request, so every decode step in the deployment
++    was paying for a constraint that belongs to the link batches alone. In the
++    2026-09-02 local terminus2 run that was 1,325 decode steps carrying a
++    penalty for 10 links.
++
++    With this enabled the scheduler keeps overlap and drains around PIC batches
++    instead, the way upstream already handles speculative decoding with grammar.
++    Off by default: it changes how a GPU deployment schedules, and the
++    measurement that would justify flipping the default has not been run.
++    """
++
++    return _env_flag("SGLANG_PIC_PER_BATCH_OVERLAP", "0")
++
++
++def batch_needs_synchronous_boundary(batch: Any) -> bool:
++    """True when this batch carries Compile or Link work.
++
++    Both write into KV the neighbouring batch may still be reading — Link
++    overwrites selected positions, Compile registers blocks the RadixCache then
++    hands out — so a batch that carries either must not be launched while the
++    previous forward is in flight, and its own result must be processed before
++    the next batch can reuse what it released. The caller applies this to the
++    batch and to its predecessor, which fences both sides.
++    """
++
++    for req in getattr(batch, "reqs", None) or ():
++        sampling_params = getattr(req, "sampling_params", None)
++        if sampling_params is None:
++            continue
++        if get_pic_link_plan(sampling_params) is not None:
++            return True
++        if get_pic_compile_cache_key(sampling_params) is not None:
++            return True
++    return False
++
++
+ def get_pic_request_metadata(req: Any) -> dict[str, Any]:
+     """Return PIC metadata only while a request is eligible for model work.
+ 
+-- 
+2.51.0.windows.2
+

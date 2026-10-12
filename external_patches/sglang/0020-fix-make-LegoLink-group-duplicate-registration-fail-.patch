@@ -1,0 +1,240 @@
+From ab0f8751d2ed5a05de5594f023696c4dd39b182e Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 13:28:46 +0800
+Subject: [PATCH 20/27] fix: make LegoLink group duplicate registration fail
+ safe
+
+A group cache key can now be claimed by a Link that reconstructed and promoted
+it or by an ordinary Compile of the same concatenation, which makes a same-key
+collision reachable in normal operation. register_legolink_block compared
+provenance labels and physical slots as if they were part of compatibility, so
+the second claim raised -- inside pin_finished_compile, which runs from the
+batch-result loop after the request has already produced its output. The raise
+did not fail a request; it killed the scheduler.
+
+Content decides now, labels do not. block_key already carries the cache key,
+the token hash and every compatibility fingerprint, so two registrations that
+agree on it are two computations of the same reusable KV; differing block_id,
+sub_context_id, semantic_block_id, context_field or slots are recorded in the
+trace and the resident entry stays authoritative. Token and compatibility
+validation are unchanged, and a genuine content mismatch still refuses -- now
+as LegoLinkDuplicateRegistrationError, which pin_finished_compile catches so
+the block simply goes unnamed.
+
+Also fixes a double free the same path could reach: promotion freed its slots
+on any exception, including after insert had already handed them to the radix
+tree.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/mem_cache/radix_cache.py | 54 ++++++++++++-----
+ python/sglang/srt/pic_runtime.py           | 67 ++++++++++++++++++++--
+ 2 files changed, 102 insertions(+), 19 deletions(-)
+
+diff --git a/python/sglang/srt/mem_cache/radix_cache.py b/python/sglang/srt/mem_cache/radix_cache.py
+index 12c1b10..8d3baf3 100644
+--- a/python/sglang/srt/mem_cache/radix_cache.py
++++ b/python/sglang/srt/mem_cache/radix_cache.py
+@@ -113,6 +113,16 @@ def _legolink_profile_range(name: str):
+ 
+ 
+ @dataclass(frozen=True)
++class LegoLinkDuplicateRegistrationError(ValueError):
++    """Two different reusable contents claim one cache key.
++
++    Raised only when the *content* disagrees -- a different token hash, or
++    fingerprints that make the resident KV unusable for the new claim. A caller
++    is expected to abandon its registration and keep the resident entry, never
++    to overwrite it. Still a ValueError, so existing handlers keep working.
++    """
++
++
+ class LegoLinkBlockKey:
+     """Compatibility-qualified logical key for one reusable semantic block."""
+ 
+@@ -803,25 +813,39 @@ class RadixCache(KVCacheEventMixin, BasePrefixCache):
+ 
+         old = self.legolink_blocks.get(cache_key)
+         if old is not None and old.valid and old.generation == self.legolink_generation:
+-            compatible = (
++            # Content decides; labels and slots do not. `block_key` already
++            # carries the cache key, the token hash and every compatibility
++            # fingerprint, so two registrations that agree on it are two
++            # computations of the same reusable KV -- which is what happens now
++            # that a group key can be claimed by a compile or by a promotion.
++            # They may legitimately differ in provenance labels and in which
++            # slots hold the result; neither makes the resident entry wrong, so
++            # it stays authoritative and the caller keeps what it brought.
++            same_content = (
+                 old.block_key == block_key
+-                and old.block_id == block_id
+-                and old.sub_context_id == sub_context_id
+-                and old.semantic_block_id == semantic_block_id
+-                and old.context_field == context_field
+                 and old.token_range == token_range
+                 and old.allocator_generation == allocator_generation
+             )
+-            if not compatible:
+-                raise ValueError(
+-                    f"LegoLink incompatible duplicate registration for cache key {cache_key}."
++            if not same_content:
++                raise LegoLinkDuplicateRegistrationError(
++                    f"LegoLink incompatible duplicate registration for cache key "
++                    f"{cache_key}: the resident block describes different content."
+                 )
+-            if old.kv_slots is not None and slot_range.slots is not None and not torch.equal(
+-                old.kv_slots.cpu(), slot_range.slots.cpu()
+-            ):
+-                raise ValueError(
+-                    f"LegoLink incompatible duplicate physical slots for cache key {cache_key}."
++            differing_labels = sorted(
++                name
++                for name, resident, offered in (
++                    ("block_id", old.block_id, block_id),
++                    ("sub_context_id", old.sub_context_id, sub_context_id),
++                    ("semantic_block_id", old.semantic_block_id, semantic_block_id),
++                    ("context_field", old.context_field, context_field),
+                 )
++                if resident != offered
++            )
++            offered_slots_adopted = bool(
++                old.kv_slots is None
++                or slot_range.slots is None
++                or torch.equal(old.kv_slots.cpu(), slot_range.slots.cpu())
++            )
+             if ownership_lock_params is not None and radix_node is not None:
+                 self.dec_lock_ref(radix_node, ownership_lock_params)
+             if old.snapshot is None and snapshot is not None:
+@@ -842,6 +866,10 @@ class RadixCache(KVCacheEventMixin, BasePrefixCache):
+                 token_count=old.token_count,
+                 generation=old.generation,
+                 allocator_generation=old.allocator_generation,
++                # So a caller can tell whether the slots it offered became the
++                # resident ones or are still its own to account for.
++                offered_slots_adopted=offered_slots_adopted,
++                differing_labels=differing_labels,
+             )
+             return old
+ 
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 17e369d..3bdd915 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -2119,7 +2119,8 @@ class PICRequestTokenRegistry:
+                 }
+             )
+             self._legolink_compatibility = dict(compatibility)
+-            tree_cache.register_legolink_block(
++            registered = self._register_compiled_block(
++                tree_cache,
+                 cache_key=cache_key,
+                 block_id=metadata.get("prefill_unit_id") or cache_key,
+                 sub_context_id=metadata.get("sub_context_id")
+@@ -2138,12 +2139,52 @@ class PICRequestTokenRegistry:
+                 compatibility=compatibility,
+             )
+             runtime.release_local_block(cache_key)
++            if not registered:
++                # A resident block already describes different content under
++                # this key. The request has already produced its output and its
++                # KV is in the radix tree; only the LegoLink name is refused, so
++                # this costs the registration and nothing else.
++                return
+         logger.info(
+             "SGLang PIC scheduler pinned cache_key=%s tokens=%d",
+             cache_key,
+             len(token_ids),
+         )
+ 
++    @staticmethod
++    def _register_compiled_block(tree_cache: Any, **kwargs: Any) -> bool:
++        """Register a compiled block, and survive a refused duplicate.
++
++        `pin_finished_compile` runs from the batch-result loop, after the
++        request has already produced its output, so a raise here does not fail
++        a request -- it kills the scheduler. A group key can now be claimed by
++        a promotion as well as by a compile, which makes a same-key collision
++        reachable in ordinary operation, so it has to degrade to "this block
++        does not get a LegoLink name".
++        """
++
++        from sglang.srt.mem_cache.radix_cache import (
++            LegoLinkDuplicateRegistrationError,
++        )
++
++        try:
++            tree_cache.register_legolink_block(**kwargs)
++        except LegoLinkDuplicateRegistrationError as error:
++            logger.warning(
++                "SGLang PIC refused a duplicate LegoLink registration for "
++                "cache_key=%s: %s",
++                kwargs.get("cache_key"),
++                error,
++            )
++            _emit_pic_trace(
++                "legolink_duplicate_registration_refused",
++                phase="compile",
++                cache_key=str(kwargs.get("cache_key")),
++                reason=str(error)[:300],
++            )
++            return False
++        return True
++
+     def reserve_link_sources(self, sampling_params: Any) -> list[str]:
+         """Validate and pin all source blocks before destination allocation.
+ 
+@@ -5108,6 +5149,11 @@ class PICRuntime:
+             return None
+         new_slots = new_slots.long()
+ 
++        # Once `insert` runs, the tree owns these rows. Freeing them on a later
++        # error would be a double free, so the error path has to know which
++        # side of that line it is on.
++        inserted = False
++
+         try:
+             global_positions = torch.arange(
+                 group_start, group_end, device=source_slots.device, dtype=torch.int64
+@@ -5135,6 +5181,7 @@ class PICRuntime:
+             result = tree_cache.insert(
+                 InsertParams(key=radix_key, value=new_slots.to(torch.int64).clone())
+             )
++            inserted = True
+             prefix_len = int(getattr(result, "prefix_len", 0) or 0)
+             if prefix_len:
+                 # Rows already in the tree belong to the tree, not to this copy.
+@@ -5187,11 +5234,12 @@ class PICRuntime:
+                 compatibility=compatibility,
+             )
+         except Exception as error:  # noqa: BLE001 - never fail a served request
+-            try:
+-                allocator.free(new_slots)
+-            except Exception:  # noqa: BLE001
+-                pass
+-            skip("promotion_failed", error=str(error)[:300])
++            if not inserted:
++                try:
++                    allocator.free(new_slots)
++                except Exception:  # noqa: BLE001
++                    pass
++            skip("promotion_failed", error=str(error)[:300], inserted=inserted)
+             return None
+ 
+         elapsed_s = _profile_elapsed(started)
+@@ -5201,6 +5249,13 @@ class PICRuntime:
+             "token_count": token_count,
+             "group_start_token": group_start,
+             "promotion_elapsed_s": round(elapsed_s, 6),
++            # False when a resident block won the key -- a race, since the
++            # `has_legolink_block` check above already skips the ordinary case.
++            "became_authoritative": bool(
++                getattr(metadata, "cache_key", None) == group_key
++                and getattr(metadata, "context_field", None)
++                == str(link_plan.get("context_field") or "execution_group")
++            ),
+             # Metadata only. Serving must not branch on where a block came
+             # from: a promoted block and a compiled block are the same thing.
+             "origin": "reconstructed",
+-- 
+2.51.0.windows.2
+

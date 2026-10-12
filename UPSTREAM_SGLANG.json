@@ -1,0 +1,19 @@
+{
+  "schema": "upstream-sglang-spec-v1",
+  "upstream": "https://github.com/sgl-project/sglang",
+  "base_commit": "cd012ad",
+  "base_commit_full": "cd012ada58ac317dd2e9df4ac87b71c104874e39",
+  "base_description": "[Fix] Fix extra uninstall of cutlass packages (#25756)",
+  "python_tree_id": "d308921b32e7611cca64993ee35ebd34fe9a6a9d",
+  "python_tree_id_meaning": "git rev-parse cd012ad:python, i.e. the tree of the python/ directory of the commit the 28-patch series was made against. The unmodified upstream baseline is exactly this tree.",
+  "patched_tree_id": "d0c440cfb49a775c52a3eb88437a56c1050e4428",
+  "patched_only_modules": [
+    "sglang/srt/pic_runtime.py",
+    "sglang/srt/legolink_triton.py",
+    "sglang/srt/flashinfer_sparse_repair.py",
+    "sglang/srt/sparse_repair_compute.py"
+  ],
+  "extraction": "git -C <patched checkout> archive cd012ad python | tar -x -C <upstream dir>  (scripts/upstream_runtime.py prepare does this and refuses unless the extracted tree hashes to python_tree_id)",
+  "isolation": "the upstream server runs from its own directory put first on PYTHONPATH, with the patched checkout untouched; scripts/upstream_runtime.py check-import proves which sglang a launch environment imports",
+  "note": "This file is the pinned identity of the independent upstream baseline. It is not a Qualification Record and qualifies nothing."
+}

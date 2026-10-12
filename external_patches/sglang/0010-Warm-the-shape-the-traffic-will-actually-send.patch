@@ -1,0 +1,92 @@
+From 583750d438cf326bafad7634e6f378ee95f15157 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 15:53:44 +0800
+Subject: [PATCH 10/27] Warm the shape the traffic will actually send
+
+The first warmup used a 48-token block at k=8. It halved the cold Compile,
+2.564 s to 0.710, and did nothing for the cold Link, which stayed at 8.887 s
+against a warm 1.8 s -- exactly the failure the payload builder's own comment
+warned about, reached by getting the request contract right and the size wrong.
+Triton specializes on constexpr values and FlashInfer plans per shape, so a
+warmup an order of magnitude below the traffic compiles kernels the traffic
+never calls.
+
+Defaults now match the standard arm: k=128 and a 1,536-token block, near the
+1,556-token selected contexts the 2026-09-02 runs sent.
+SGLANG_PIC_WARMUP_BLOCK_TOKENS and SGLANG_PIC_WARMUP_LEGOLINK_K let a
+deployment whose traffic looks different say so, and k is clamped to the block
+it recomputes from.
+---
+ python/sglang/srt/pic_runtime.py | 35 ++++++++++++++++++++++++++++----
+ 1 file changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index e5331ac..fbd8a2d 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -567,7 +567,33 @@ def legolink_only_mode_enabled() -> bool:
+ 
+ 
+ _WARMUP_CACHE_KEY = "sglang-pic-warmup-block"
+-_WARMUP_TEXT = " ".join(["warmup context block for kernel specialization"] * 8)
++
++
++def _warmup_shape() -> tuple[int, int]:
++    """Block size and LegoLink k the warmup should specialize for.
++
++    The first attempt used a 48-token block and k=8. It halved the cold Compile
++    -- 2.564 s to 0.710 -- and did nothing at all for the cold Link, which
++    stayed at 8.887 s against a warm 1.8 s. That is the failure this function
++    exists to prevent: Triton specializes on constexpr values and FlashInfer
++    plans per shape, so a warmup an order of magnitude smaller than the traffic
++    compiles kernels the traffic will not use.
++
++    The defaults match the project's standard arm -- k=128 and a block near the
++    1,556-token selected contexts the 2026-09-02 runs actually sent. A
++    deployment whose traffic looks different should say so rather than warm the
++    wrong shape.
++    """
++
++    tokens = max(int(os.getenv("SGLANG_PIC_WARMUP_BLOCK_TOKENS", "1536")), 16)
++    k = max(int(os.getenv("SGLANG_PIC_WARMUP_LEGOLINK_K", "128")), 1)
++    return tokens, min(k, tokens)
++
++
++def _warmup_text(tokens: int) -> str:
++    # Roughly one token per word for this filler; the point is the shape the
++    # kernels see, not the content, and nothing reads it back.
++    return " ".join(["warmup context block for kernel specialization"] * (tokens // 6))
+ 
+ 
+ def legolink_warmup_enabled() -> bool:
+@@ -598,6 +624,7 @@ def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]
+     warm nothing and hide that it warmed nothing.
+     """
+ 
++    block_tokens, legolink_k = _warmup_shape()
+     metadata = {
+         "prefill_unit_id": _WARMUP_CACHE_KEY,
+         "cache_key": _WARMUP_CACHE_KEY,
+@@ -613,7 +640,7 @@ def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]
+     }
+     compile_request = {
+         "model": model,
+-        "messages": [{"role": "user", "content": _WARMUP_TEXT}],
++        "messages": [{"role": "user", "content": _warmup_text(block_tokens)}],
+         "temperature": 0,
+         "max_tokens": 1,
+         "extra_key": _WARMUP_CACHE_KEY,
+@@ -634,8 +661,8 @@ def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]
+             "task_id": "sglang-pic-warmup",
+             "block_ids": [_WARMUP_CACHE_KEY],
+             "cache_keys": [_WARMUP_CACHE_KEY],
+-            "recompute_initial_tokens": 8,
+-            "legolink_k": 8,
++            "recompute_initial_tokens": legolink_k,
++            "legolink_k": legolink_k,
+             "position_policy": "block_local_compile_global_link",
+             "compile_attention_policy": "isolated_causal",
+             "link_attention_policy": "legolink_sparse_causal",
+-- 
+2.51.0.windows.2
+

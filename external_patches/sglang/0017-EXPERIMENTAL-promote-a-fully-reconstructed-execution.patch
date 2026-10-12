@@ -1,0 +1,347 @@
+From 8d3b7d6d332b815c5452043b1f191d2aa7e5dbae Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 12:24:23 +0800
+Subject: [PATCH 17/27] EXPERIMENTAL: promote a fully reconstructed execution
+ group into RadixCache
+
+A Link already builds the grouped state -- member KV copied to its global
+offset, RoPE remapped, selected rows recomputed -- and then discards it,
+because register_legolink_block is only reachable from pin_finished_compile.
+This adds the missing half behind two switches that must both be on:
+SGLANG_PIC_EXPERIMENTAL_GROUP_PROMOTION on the deployment, and
+promote_reconstructed_group on the request. Default behaviour is unchanged.
+
+Promotion copies rather than transferring the request's own slots, and the
+reason is not speed. cache_finished_req inserts those slots into the radix
+tree under the whole request sequence, so handing them to a group block would
+give two cache entries one buffer; and they carry RoPE angles for their global
+positions, while a compiled block carries block-local ones. The copy is
+rotated back into the local frame, which is what makes a promoted block
+interchangeable with a compiled one instead of double-rotated on the next
+link.
+
+Fails closed: no group key, a singleton group, a member recomputed below its
+full length, a paged cache, a failed allocation, an already-registered key or
+any exception all skip with a trace row and free whatever was taken. A skipped
+promotion costs a trace row, never an answer.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 273 +++++++++++++++++++++++++++++++
+ 1 file changed, 273 insertions(+)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index efac71c..f702a70 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -701,6 +701,19 @@ PIC_LINK_DIAGNOSTIC_FIELDS = frozenset(
+     }
+ )
+ 
++#: EXPERIMENTAL, off by default. The host may ask that a successfully
++#: reconstructed execution group be promoted into RadixCache under a
++#: content-derived group key. Both fields are semantic intent -- which members
++#: were grouped, and what the group is called. Every physical decision (slots,
++#: positions, ownership, when to refuse) stays in this process, which is why
++#: the key is accepted but the slots are not.
++PIC_LINK_EXPERIMENTAL_PROMOTION_FIELDS = frozenset(
++    {
++        "promote_reconstructed_group",
++        "execution_group_key",
++    }
++)
++
+ #: Accepted but superseded. recompute_initial_tokens says the same thing.
+ PIC_LINK_DEPRECATED_ALIASES = frozenset({"legolink_k"})
+ 
+@@ -715,6 +728,7 @@ PIC_LINK_REQUEST_FIELDS = (
+     | PIC_LINK_REPAIR_POLICY_FIELDS
+     | PIC_LINK_TOKEN_LAYOUT_FIELDS
+     | PIC_LINK_DIAGNOSTIC_FIELDS
++    | PIC_LINK_EXPERIMENTAL_PROMOTION_FIELDS
+     | PIC_LINK_DEPRECATED_ALIASES
+ )
+ 
+@@ -739,6 +753,19 @@ PIC_LINK_RUNTIME_OWNED_FIELDS = frozenset(
+ PIC_LINK_INTERNAL_FIELDS = frozenset({"_scheduler_reserved_cache_keys"})
+ 
+ 
++def group_promotion_enabled() -> bool:
++    """EXPERIMENTAL. Whether a reconstructed execution group may be promoted
++    into RadixCache.
++
++    Two independent switches, on purpose: the deployment enables the code path
++    and the request asks for it. Neither alone promotes anything, so the
++    default deployment cannot be talked into persisting a reconstructed state
++    by a request field alone.
++    """
++
++    return _env_flag("SGLANG_PIC_EXPERIMENTAL_GROUP_PROMOTION", "0")
++
++
+ def legacy_link_fields_allowed() -> bool:
+     """Whether a host-sent physical field downgrades to a warning.
+ 
+@@ -3200,6 +3227,27 @@ class PICRuntime:
+                 "repaired_token_count": len(imp_indices),
+             },
+         )
++        # EXPERIMENTAL, off unless the deployment and the request both ask.
++        # The grouped state exists exactly here -- reconstructed, repaired, and
++        # about to be discarded with the request's slots. Promotion runs after
++        # repair and before decode so that a failure to persist can only cost a
++        # trace row, never an answer.
++        promotion = None
++        if group_promotion_enabled() and link_plan.get(
++            "promote_reconstructed_group"
++        ):
++            with host_recorder.span("execution_group_promotion"):
++                promotion = self._promote_reconstructed_group(
++                    pool=forward_batch.token_to_kv_pool,
++                    destination_slots=destination_slots,
++                    full_input_ids=full_input_ids,
++                    link_plan=link_plan,
++                    recompute_tokens_per_block=list(
++                        link_plan.get("recompute_tokens_per_block") or []
++                    ),
++                    trace_context=trace_context,
++                )
++
+         from sglang.srt.flashinfer_sparse_repair import (
+             finalize_sparse_repair_metadata,
+         )
+@@ -4926,6 +4974,231 @@ class PICRuntime:
+         timings["_legolink_total_span"] = legolink_total_span
+         return timings
+ 
++    def _promote_reconstructed_group(
++        self,
++        *,
++        pool: Any,
++        destination_slots: torch.Tensor,
++        full_input_ids: list[int],
++        link_plan: dict[str, Any],
++        recompute_tokens_per_block: list[int],
++        trace_context: dict[str, Any],
++    ) -> Optional[dict[str, Any]]:
++        """EXPERIMENTAL. Make a reconstructed execution group durable.
++
++        A Link already builds the grouped state -- member KV copied to its
++        global offset, RoPE remapped, selected rows recomputed -- and then
++        throws it away, because ``register_legolink_block`` is only ever
++        reached from the compile path. This is the missing half: after a
++        *fully* reconstructed group, copy the grouped rows into cache-owned
++        slots and register them, so the next request linking the same members
++        finds a block instead of rebuilding one.
++
++        Two things make this a copy rather than an ownership transfer of the
++        request's own slots, and neither is about speed:
++
++        * **Aliasing.** The request's slots are inserted into the radix tree by
++          ``cache_finished_req`` under the *whole* request sequence. Handing
++          the same slots to a group block would give two cache entries one
++          buffer, and the rotation below would then corrupt the other one.
++        * **Position frame.** Those rows carry RoPE angles for their global
++          positions. A compiled block carries block-local angles, because
++          ``_copy_linked_kv`` rotates local->global at link time. Registering
++          globally-rotated rows would double-rotate them on the next link, so
++          the copy is rotated back into the local frame first and a promoted
++          block is interchangeable with a compiled one.
++
++        Fails closed everywhere: a skipped promotion is a trace row and a
++        served request, never a partial cache entry.
++        """
++
++        def skip(reason: str, **details: Any) -> None:
++            _emit_pic_trace(
++                "group_promotion_skipped",
++                phase="link",
++                **trace_context,
++                reason=reason,
++                **details,
++            )
++
++        group_key = link_plan.get("execution_group_key")
++        if not isinstance(group_key, str) or not group_key.strip():
++            skip("no_execution_group_key")
++            return None
++        group_key = group_key.strip()
++
++        cache_keys = [str(key) for key in (link_plan.get("cache_keys") or [])]
++        if len(cache_keys) < 2:
++            # A singleton group *is* its member's block. A second name for the
++            # same KV would duplicate an entry that already exists and works.
++            skip("singleton_group", member_count=len(cache_keys))
++            return None
++
++        ranges = link_plan.get("block_ranges") or link_plan.get("attention_ranges") or []
++        if len(ranges) != len(cache_keys):
++            skip("block_range_mismatch")
++            return None
++
++        # Only a fully reconstructed group may become durable. Every member
++        # after the first must have been recomputed in its entirety; a
++        # partially refreshed group answers correctly often enough to be
++        # tempting, and is exactly what must not be persisted.
++        for index, (block_range, window) in enumerate(
++            zip(ranges[1:], recompute_tokens_per_block[1:]), start=1
++        ):
++            token_count = int(block_range["end_token"]) - int(block_range["start_token"])
++            if int(window) < token_count:
++                skip(
++                    "reconstruction_below_promotion_policy",
++                    member_index=index,
++                    recomputed=int(window),
++                    token_count=token_count,
++                )
++                return None
++
++        tree_cache = getattr(self, "_legolink_cache", None)
++        if tree_cache is None or not hasattr(tree_cache, "register_legolink_block"):
++            skip("legolink_registry_unavailable")
++            return None
++        allocator = getattr(tree_cache, "token_to_kv_pool_allocator", None)
++        if allocator is None or not hasattr(allocator, "alloc"):
++            skip("allocator_unavailable")
++            return None
++        if int(getattr(tree_cache, "page_size", 1) or 1) != 1:
++            # A paged tree aligns keys down, so the block's tail would be
++            # registered without its KV. Refuse rather than register short.
++            skip("page_size_unsupported", page_size=int(tree_cache.page_size))
++            return None
++
++        group_start = int(ranges[0]["start_token"])
++        group_end = int(ranges[-1]["end_token"])
++        token_count = group_end - group_start
++        group_token_ids = [int(token) for token in full_input_ids[group_start:group_end]]
++        if token_count <= 0 or len(group_token_ids) != token_count:
++            skip("group_token_range_invalid")
++            return None
++        if getattr(
++            tree_cache, "has_legolink_block", None
++        ) and tree_cache.has_legolink_block(group_key):
++            # Somebody already promoted this group. First registration wins and
++            # this reconstruction is discarded rather than overwriting it.
++            skip("already_registered", cache_key=group_key, token_count=token_count)
++            return None
++
++        _emit_pic_trace(
++            "group_promotion_started",
++            phase="link",
++            **trace_context,
++            cache_key=group_key,
++            member_cache_keys=cache_keys,
++            token_count=token_count,
++            group_start_token=group_start,
++        )
++
++        from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
++        from sglang.srt.mem_cache.radix_cache import InsertParams, RadixKey
++
++        started = _profile_start()
++        source_slots = destination_slots[group_start:group_end].long()
++        new_slots = allocator.alloc(token_count)
++        if new_slots is None or len(new_slots) != token_count:
++            if new_slots is not None:
++                allocator.free(new_slots)
++            skip("allocation_failed", token_count=token_count)
++            return None
++        new_slots = new_slots.long()
++
++        try:
++            global_positions = torch.arange(
++                group_start, group_end, device=source_slots.device, dtype=torch.int64
++            )
++            local_positions = torch.arange(
++                token_count, device=source_slots.device, dtype=torch.int64
++            )
++            for layer_id in range(
++                self.model_runner.start_layer, self.model_runner.end_layer
++            ):
++                key = pool.get_key_buffer(layer_id).index_select(0, source_slots)
++                value = pool.get_value_buffer(layer_id).index_select(0, source_slots)
++                # global -> local: the exact inverse of what the next link does.
++                key = self._remap_key_positions(
++                    layer_id,
++                    key,
++                    global_positions,
++                    local_positions,
++                    max_global_position=max(group_end, token_count),
++                )
++                pool.get_key_buffer(layer_id).index_copy_(0, new_slots, key)
++                pool.get_value_buffer(layer_id).index_copy_(0, new_slots, value)
++
++            radix_key = RadixKey(token_ids=list(group_token_ids), extra_key=None)
++            result = tree_cache.insert(
++                InsertParams(key=radix_key, value=new_slots.to(torch.int64).clone())
++            )
++            prefix_len = int(getattr(result, "prefix_len", 0) or 0)
++            if prefix_len:
++                # Rows already in the tree belong to the tree, not to this copy.
++                allocator.free(new_slots[:prefix_len])
++            match_result = tree_cache.match_prefix(MatchPrefixParams(key=radix_key))
++            if len(match_result.device_indices) != token_count:
++                skip(
++                    "radix_insert_incomplete",
++                    matched=int(len(match_result.device_indices)),
++                    token_count=token_count,
++                )
++                return None
++            compatibility = dict(getattr(self, "_legolink_compatibility", {}) or {})
++            metadata = tree_cache.register_legolink_block(
++                cache_key=group_key,
++                block_id=group_key,
++                sub_context_id=group_key,
++                semantic_block_id=group_key,
++                context_field=str(link_plan.get("context_field") or "execution_group"),
++                token_ids=tuple(group_token_ids),
++                token_range=(0, token_count),
++                kv_slots=match_result.device_indices,
++                snapshot=None,
++                radix_node=match_result.last_device_node,
++                recomputed_tokens=token_count,
++                pinned=False,
++                compatibility=compatibility,
++            )
++        except Exception as error:  # noqa: BLE001 - never fail a served request
++            try:
++                allocator.free(new_slots)
++            except Exception:  # noqa: BLE001
++                pass
++            skip("promotion_failed", error=str(error)[:300])
++            return None
++
++        elapsed_s = _profile_elapsed(started)
++        record = {
++            "cache_key": group_key,
++            "member_cache_keys": cache_keys,
++            "token_count": token_count,
++            "group_start_token": group_start,
++            "promotion_elapsed_s": round(elapsed_s, 6),
++            # Metadata only. Serving must not branch on where a block came
++            # from: a promoted block and a compiled block are the same thing.
++            "origin": "reconstructed",
++        }
++        _emit_pic_trace(
++            "group_registered",
++            phase="link",
++            **trace_context,
++            **record,
++            block_id=getattr(metadata, "block_id", group_key),
++        )
++        logger.info(
++            "SGLang PIC promoted reconstructed group cache_key=%s tokens=%d "
++            "members=%d elapsed_s=%.4f",
++            group_key,
++            token_count,
++            len(cache_keys),
++            elapsed_s,
++        )
++        return record
++
+     def _remap_key_positions(
+         self,
+         layer_id: int,
+-- 
+2.51.0.windows.2
+

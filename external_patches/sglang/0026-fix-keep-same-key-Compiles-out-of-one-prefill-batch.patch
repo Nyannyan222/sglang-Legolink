@@ -1,0 +1,99 @@
+From a7e1277dfd9588a173b74acbc1e7a1d5e5f9def2 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 16 Sep 2026 01:26:37 +0800
+Subject: [PATCH 26/27] fix: keep same-key Compiles out of one prefill batch
+
+Terminal-Bench C=8 with Link admission crashed the scheduler: three
+byte-identical task copies sent a Compile of the same semantic block at the
+same moment and both landed in one prefill batch. The forward captures one
+runtime snapshot for the key; pin_finished_compile for the first result
+rebinds it, registers the block with RadixCache and releases the local
+snapshot (release_local_block), so the second result finds no snapshot and
+rebind_reference_slots raises "PIC cannot rebind missing block". The race
+needs no Link and no admission flag: three simultaneous identical Compiles
+crash an unmodified server with the flag off in the first round.
+
+A later batch is safe -- the second Compile then takes RadixCache's existing
+duplicate-registration path -- so the scheduler now defers a Compile whose
+cache key is already in the prefill batch being built. Unconditional, since
+the race exists without admission. Registration, RadixCache ownership and
+cache-key lifetime are unchanged.
+
+- pic_runtime.py: pic_compile_key_in_batch(cache_key, batch_reqs).
+- scheduler.py: _get_new_batch_prefill_raw skips such a Compile with
+  `continue`; it stays in the waiting queue for the next batch.
+
+Verified: 5 rounds x 3 simultaneous identical Compiles on the fixed server
+(flag off): all 200, one registration and two duplicate_register_hit per key,
+no scheduler exception.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/managers/scheduler.py | 13 ++++++++++++-
+ python/sglang/srt/pic_runtime.py        | 24 ++++++++++++++++++++++++
+ 2 files changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 5a3e498..140cc4c 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2584,9 +2584,20 @@ class Scheduler(
+         # batch-of-one clauses are unchanged.
+         admit_link_while_decoding = link_admission_while_decoding_enabled()
+         for req in self.waiting_queue:
+-            from sglang.srt.pic_runtime import PICRuntimeError, get_pic_link_plan
++            from sglang.srt.pic_runtime import (
++                PICRuntimeError,
++                get_pic_compile_cache_key,
++                get_pic_link_plan,
++                pic_compile_key_in_batch,
++            )
+ 
+             is_pic_link = get_pic_link_plan(req.sampling_params) is not None
++            # Two Compiles of one cache key must not finish in the same prefill
++            # batch (see pic_compile_key_in_batch); the second waits one batch.
++            if not is_pic_link and pic_compile_key_in_batch(
++                get_pic_compile_cache_key(req.sampling_params), adder.can_run_list
++            ):
++                continue
+             if is_pic_link and (
+                 adder.can_run_list
+                 or (
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index bd95248..9b69d02 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -1777,6 +1777,30 @@ def get_pic_compile_cache_key(sampling_params: Any) -> Optional[str]:
+     return str(cache_key) if cache_key else None
+ 
+ 
++def pic_compile_key_in_batch(cache_key: Optional[str], batch_reqs: Any) -> bool:
++    """Whether a Compile of ``cache_key`` is already in the prefill batch being built.
++
++    Two Compiles of one cache key must not finish in the same prefill batch.
++    The forward captures one runtime snapshot for the key; processing the
++    first result rebinds it, registers the block with RadixCache and releases
++    the local snapshot, so the second result finds no snapshot and
++    ``rebind_reference_slots`` raises -- which takes the scheduler down.
++    Byte-identical agents reaching the same turn together produce exactly
++    this (Terminal-Bench C=8, three task copies, 2026-09-16). A later
++    batch is safe: the second Compile then takes RadixCache's existing
++    duplicate-registration path. The scheduler therefore defers a
++    same-key Compile to the next batch; nothing about registration,
++    ownership or cache-key lifetime changes.
++    """
++
++    if cache_key is None:
++        return False
++    return any(
++        get_pic_compile_cache_key(getattr(req, "sampling_params", None)) == cache_key
++        for req in batch_reqs
++    )
++
++
+ def get_pic_compile_metadata(sampling_params: Any) -> dict[str, Any]:
+     metadata = _custom_params(sampling_params).get("sub_context_metadata")
+     if not isinstance(metadata, dict):
+-- 
+2.51.0.windows.2
+

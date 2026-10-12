@@ -1,0 +1,38 @@
+From 23ee8d60804b93d4a523efeb80fb9f9b67a2feb1 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 02:41:00 +0800
+Subject: [PATCH 06/27] Do not fence a PIC batch when nothing is in flight
+
+event_loop_overlap calls pop_and_process() unconditionally once
+is_disable_overlap_for_batch returns True, so the first Compile batch of a run
+popped an empty deque and killed the scheduler -- IndexError, SIGQUIT, zero
+decode steps in the 2026-09-02 local A/B. Both upstream conditions already
+imply a predecessor; ours has to check the queue. An empty queue also means
+there is nothing to fence against.
+---
+ python/sglang/srt/managers/scheduler.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 0bd14ce..1349e0e 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -1627,8 +1627,14 @@ class Scheduler(
+             per_batch_overlap_enabled,
+         )
+ 
++        # The queue check is not an optimization. event_loop_overlap calls
++        # pop_and_process() unconditionally once this returns True, so saying
++        # yes with nothing in flight pops an empty deque and kills the
++        # scheduler -- which is what the first Compile batch of a run did.
++        # Both upstream conditions already imply a predecessor; this one has to
++        # say so. An empty queue also means there is nothing to fence against.
+         need_pic_sync = False
+-        if per_batch_overlap_enabled():
++        if per_batch_overlap_enabled() and len(self.result_queue) > 0:
+             need_pic_sync = batch_needs_synchronous_boundary(
+                 batch
+             ) or batch_needs_synchronous_boundary(self.last_batch)
+-- 
+2.51.0.windows.2
+

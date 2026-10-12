@@ -1,0 +1,127 @@
+{
+  "upstream": "https://github.com/sgl-project/sglang",
+  "base_commit": "cd012ad",
+  "base_description": "cd012ada58ac317dd2e9df4ac87b71c104874e39 [Fix] Fix extra uninstall of cutlass packages (#25756)",
+  "base_version_tag": "cd012ad",
+  "patched_branch": "noc/legolink-pic-runtime",
+  "patched_head_commit": "7e61b597166b7ec07863dd42e830e77f6d5fd6f8",
+  "patched_tree": "d0c440cfb49a775c52a3eb88437a56c1050e4428",
+  "working_tree_clean": true,
+  "patch_count": 28,
+  "patches": [
+    {
+      "file": "0001-NOC-semantic-sub-context-KV-reuse-and-position-indep.patch",
+      "sha256": "d92d646456934d9d30c0f21ed58212050ebb331ab77688a9960572c020ec438d"
+    },
+    {
+      "file": "0002-Treat-FlashInfer-workspace-overflow-as-capacity-not-.patch",
+      "sha256": "0c78a8cb96310c1f34d8d5b9de212ecc6126cb064205d69bb811d4c5d70e72a5"
+    },
+    {
+      "file": "0003-Carry-capacity-degradation-across-execution-units-of.patch",
+      "sha256": "d9b5bf48dbf043ef707853ed2296188fb10e2f925054a82ee843174da45ec326"
+    },
+    {
+      "file": "0004-Stop-evaluating-disabled-trace-arguments-in-the-KV-l.patch",
+      "sha256": "00dac5a04ce405527b27931101459bfdbe061eb37b552c2a7d8238ef9df1ebda"
+    },
+    {
+      "file": "0005-Suppress-overlap-for-PIC-batches-not-for-the-deploym.patch",
+      "sha256": "8c39285f10e54006cabc877d1d28bff5a60816451942ab347974c55309d1bde0"
+    },
+    {
+      "file": "0006-Do-not-fence-a-PIC-batch-when-nothing-is-in-flight.patch",
+      "sha256": "f2627acf4ae9e6f2e21a2a9f74cd38a58c1d4552835eb9e2eef455d98ebec8c9"
+    },
+    {
+      "file": "0007-Emit-the-decode-span-around-CUDA-graph-replay-too.patch",
+      "sha256": "d330a812507e2f1670a5de525e63d7a09215e0178f7f3259eb5b51060f2f77ed"
+    },
+    {
+      "file": "0008-Hold-the-trace-descriptor-open-instead-of-reopening-.patch",
+      "sha256": "1551a033369c11b4ce8c5cbfc8285b84b418a7744b680c1dcbc177e46830b5d3"
+    },
+    {
+      "file": "0009-Warm-a-LegoLink-only-server-with-the-requests-it-acc.patch",
+      "sha256": "5cee0280f0c5fbe40496f1233f3f5abf1bb460c27263f55bc33a526869b4149b"
+    },
+    {
+      "file": "0010-Warm-the-shape-the-traffic-will-actually-send.patch",
+      "sha256": "3ed1947d66e429cfaf32157119960d28c576f9a22bee15ec4645cfef54c4616c"
+    },
+    {
+      "file": "0011-Ask-the-warmup-for-eight-tokens-so-decode-runs.patch",
+      "sha256": "28f93e55ab607266a51859a3179fb575c41b69e44aa19358c8239bac3a60c717"
+    },
+    {
+      "file": "0012-Let-the-host-say-what-to-reuse-not-how-to-lay-it-out.patch",
+      "sha256": "e0b6d0c56dd48e474eeb249b1afedbb16543f1348e44fc0d38655ad5432de45b"
+    },
+    {
+      "file": "0013-Govern-formal-PIC-framing-and-repair-decisions-befor.patch",
+      "sha256": "40c84bea7b518c0f1914c9c4e23cdf9803028df9317bf842c6bcff47c57ae5ad"
+    },
+    {
+      "file": "0014-DEBUG-capture-post-remap-cached-K-before-sparse-repa.patch",
+      "sha256": "8d63a2db36d5b78cba61dc6e40a393eb97e8f485776a65fc814b3e7862da5928"
+    },
+    {
+      "file": "0015-Remap-a-linked-block-by-its-position-offset-not-its-.patch",
+      "sha256": "743650b8b8134fbf7a677c6397e9a4a5f30bbe2508700d4b9591c8212085d9d6"
+    },
+    {
+      "file": "0016-DEBUG-capture-post-repair-cached-K-and-V-for-selecte.patch",
+      "sha256": "4600414744740c8f1060ec71f732ba9558c93252419932c6bfd4a7cf87ac84b5"
+    },
+    {
+      "file": "0017-EXPERIMENTAL-promote-a-fully-reconstructed-execution.patch",
+      "sha256": "59ea2552adf0926cc7726e2a31e9f3998afd7f50f49cde2cb199dc797bb14af0"
+    },
+    {
+      "file": "0018-Declare-a-promoted-group-s-compatibility-the-way-a-c.patch",
+      "sha256": "e1a390d91a1daf4c3f0eb05dfb9db531435554d31e20db77cbc6aa24a4c0b4a0"
+    },
+    {
+      "file": "0019-Give-a-promoted-group-the-reference-snapshot-the-lin.patch",
+      "sha256": "919efd20f5a4f175d0030ad7e0578f13db0457cfd4ffa5fc03d380dcbe20c7ea"
+    },
+    {
+      "file": "0020-fix-make-LegoLink-group-duplicate-registration-fail-.patch",
+      "sha256": "1d0c6e16b6d1b6960044f13d491ea6c73373682bd8e09e74192fc88a7a82d4fa"
+    },
+    {
+      "file": "0021-fix-keep-the-dataclass-decorator-on-LegoLinkBlockKey.patch",
+      "sha256": "5d444b8c215d0f290ea315e0202a1f3a8c88ba12cb34293d27361c397fa481b3"
+    },
+    {
+      "file": "0022-runtime-let-group-promotion-participate-in-cache-evi.patch",
+      "sha256": "1c58c32e160e98936119dc5f73ffd2d1e41b07b20e052d94dc0173337760755b"
+    },
+    {
+      "file": "0023-runtime-support-indexed-cached-fresh-prefill-plan.patch",
+      "sha256": "c555140ce094a3fe815088ba2ecde8b7f960971c3d4ad8db3647b96cdd7fb174"
+    },
+    {
+      "file": "0024-fix-tie-the-Link-reservation-marker-to-its-pins-fail.patch",
+      "sha256": "253a6fa69f40b0a22e1ee9a96406e1797cd09e4749014a7d64b5b6013460335f"
+    },
+    {
+      "file": "0025-experiment-default-off-flag-to-admit-a-Link-while-ot.patch",
+      "sha256": "c4dda2ccbd24c49368e5552b02782c2bae3b333e6dc8096c0a4a846ec6bead1f"
+    },
+    {
+      "file": "0026-fix-keep-same-key-Compiles-out-of-one-prefill-batch.patch",
+      "sha256": "2a153bd2641b412478bda5fb7954436c5c14e9b286f0ee5870d6ef821c1a461c"
+    },
+    {
+      "file": "0027-fix-name-the-missing-source-blocks-when-a-Link-prefl.patch",
+      "sha256": "b107473f9cf1e6d3dea29c29f474dbd73b79d893b95186754371eb66cd65f534"
+    },
+    {
+      "file": "0028-security-contain-malformed-PIC-requests-and-compile-.patch",
+      "sha256": "d417ed83427bd8e782c6af13307e304bce6ea1b135c0426dd2338af9b1055d77"
+    }
+  ],
+  "apply": "git clone <upstream>; git checkout cd012ad; git am external_patches/sglang/*.patch  (scripts/h200_reuse/build_patched_sglang.sh checks the tree)",
+  "note": "the head commit differs when the series is applied with git am elsewhere (commit metadata); the TREE is what is compared"
+}

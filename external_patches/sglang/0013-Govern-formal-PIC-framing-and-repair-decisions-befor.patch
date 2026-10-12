@@ -1,0 +1,187 @@
+From ab5c06f1060121e6e4e60ed131cb3005d606d1b7 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Tue, 8 Sep 2026 15:11:47 +0800
+Subject: [PATCH 13/27] Govern formal PIC framing and repair decisions before
+ execution
+
+---
+ python/sglang/srt/pic_runtime.py | 118 ++++++++++++++++++++++++++++++-
+ 1 file changed, 116 insertions(+), 2 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index a1091a2..d981ba8 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -550,7 +550,10 @@ PIC_LINK_DIAGNOSTIC_FIELDS = frozenset(
+ PIC_LINK_DEPRECATED_ALIASES = frozenset({"legolink_k"})
+ 
+ #: Everything a host may send.
++PIC_LINK_GOVERNANCE_FIELDS = frozenset({"execution_mode", "framing_spec", "repair_decision"})
++
+ PIC_LINK_REQUEST_FIELDS = (
++    PIC_LINK_GOVERNANCE_FIELDS |
+     PIC_LINK_IDENTITY_FIELDS
+     | PIC_LINK_SELECTION_FIELDS
+     | PIC_LINK_COMPATIBILITY_FIELDS
+@@ -602,9 +605,10 @@ def validate_pic_link_request(link_plan: dict[str, Any]) -> None:
+     if not isinstance(link_plan, dict):
+         raise PICRuntimeError("pic_link must be an object.")
+ 
++    validate_runtime_execution_intent(link_plan)
+     physical = sorted(set(link_plan) & PIC_LINK_RUNTIME_OWNED_FIELDS)
+     if physical:
+-        if not legacy_link_fields_allowed():
++        if link_plan.get("execution_mode") == "formal" or not legacy_link_fields_allowed():
+             raise PICRuntimeError(
+                 "pic_link carries fields the runtime derives and the host "
+                 f"cannot know: {', '.join(physical)}. Send the semantic "
+@@ -635,6 +639,104 @@ def validate_pic_link_request(link_plan: dict[str, Any]) -> None:
+         )
+ 
+ 
++def validate_execution_intent(wire, profile=None, *, require_formal=False):
++    """Validate policy, then consistency. `profile` is deployment-owned trust.
++
++    canonical_input_hashes are reviewed canonical input evidence, never learned
++    from the incoming request. An identity label plus a matching hash is not a
++    framing proof. Admission requires that input in the installed profile too.
++    """
++    import math
++
++    mode = wire.get("execution_mode", "legacy_debug")
++    if mode not in ("formal", "legacy_debug"):
++        raise ValueError("unknown execution_mode")
++    if require_formal and mode != "formal":
++        raise ValueError("formal deployment rejects legacy_debug execution")
++    formal = require_formal or mode == "formal"
++    framing = wire.get("framing_spec")
++    repair = wire.get("repair_decision")
++    if not formal and framing is None and repair is None:
++        return
++    required_framing = {"framing_layout_version", "model_id", "tokenizer_fingerprint",
++                        "chat_template_sha256", "profile_id"}
++    if not isinstance(framing, dict) or set(framing) != required_framing:
++        raise ValueError("missing or malformed framing_spec")
++    if any(not isinstance(v, str) or not v.strip() for v in framing.values()):
++        raise ValueError("framing identity must be nonempty")
++    version = framing["framing_layout_version"]
++    if version != "noc-single-chat-template-split-v1":
++        raise ValueError("unsupported/legacy framing version")
++    template = framing["chat_template_sha256"]
++    if len(template) != 64 or any(c not in "0123456789abcdef" for c in template):
++        raise ValueError("invalid chat template hash")
++    if wire.get("physical_token_layout_version") != version:
++        raise ValueError("framing and physical layout version disagree")
++    fields = {"selected_k", "windows", "policy", "policy_version",
++              "framing_layout_version", "quality_profile_id", "evidence_id",
++              "reason", "workload_class"}
++    if not isinstance(repair, dict) or set(repair) != fields:
++        raise ValueError("missing or malformed RepairDecision")
++    k, windows = repair["selected_k"], repair["windows"]
++    if type(k) is not int or k < 0:
++        raise ValueError("selected_k must be a nonnegative integer")
++    if (not isinstance(windows, list) or len(windows) != len(wire.get("cache_keys", []))
++            or not windows or any(type(v) is not int or v < 0 or v > k for v in windows)):
++        raise ValueError("invalid repair window vector")
++    if repair["policy_version"] != "repair-decision-v1":
++        raise ValueError("unsupported repair policy version")
++    if repair["framing_layout_version"] != version:
++        raise ValueError("repair/framing incompatibility")
++    if repair["policy"] not in ("quality_guarded", "fixed_unvalidated_debug"):
++        raise ValueError("unknown repair policy")
++    if not all(isinstance(repair[x], str) and repair[x].strip()
++               for x in ("reason", "workload_class")):
++        raise ValueError("missing repair provenance")
++    if type(wire.get("recompute_initial_tokens")) is not int or wire["recompute_initial_tokens"] != k:
++        raise ValueError("repair K was replaced or defaulted")
++    if wire.get("recompute_tokens_per_block") != windows:
++        raise ValueError("repair windows were replaced or defaulted")
++    if (wire.get("recompute_first_block_tokens") != windows[0]
++            or wire.get("recompute_first_block") is not bool(windows[0])):
++        raise ValueError("first-block repair disagrees with decision")
++    if "legolink_k" in wire and wire["legolink_k"] != k:
++        raise ValueError("legacy K alias disagrees with decision")
++    if formal or repair["policy"] == "quality_guarded":
++        if repair["policy"] != "quality_guarded":
++            raise ValueError("formal execution requires measured repair quality")
++        if not isinstance(profile, dict) or profile.get("framing_spec") != framing:
++            raise ValueError("missing/incompatible deployment framing profile")
++        if wire.get("expected_complete_token_ids_sha256") not in profile.get("canonical_input_hashes", []):
++            raise ValueError("input has no reviewed canonical framing evidence")
++        quality = profile.get("repair_quality_profiles", {}).get(repair["quality_profile_id"])
++        if not isinstance(quality, dict):
++            raise ValueError("missing repair quality profile")
++        for name in ("selected_k", "windows", "workload_class", "evidence_id"):
++            if quality.get(name) != repair[name]:
++                raise ValueError("incompatible repair quality " + name)
++        if (quality.get("framing_spec") != framing or quality.get("status") != "PASS"
++                or quality.get("profile_id") != repair["quality_profile_id"]
++                or not repair["evidence_id"] or not quality.get("metric")):
++            raise ValueError("unvalidated repair quality provenance")
++        measured, threshold = quality.get("measured_value"), quality.get("required_threshold")
++        if (type(measured) not in (float, int) or type(threshold) not in (float, int)
++                or not math.isfinite(measured) or not math.isfinite(threshold)
++                or measured < threshold):
++            raise ValueError("repair quality threshold not satisfied")
++
++
++def validate_runtime_execution_intent(link_plan):
++    profile = None
++    profile_path = os.getenv("SGLANG_PIC_EXECUTION_PROFILE")
++    if profile_path:
++        with open(profile_path, encoding="utf-8") as handle:
++            profile = json.load(handle)
++    formal = os.getenv("SGLANG_PIC_FORMAL_EXECUTION", "0") == "1"
++    try:
++        validate_execution_intent(link_plan, profile, require_formal=formal)
++    except ValueError as error:
++        raise PICRuntimeError(str(error)) from error
++
+ @dataclass(frozen=True)
+ class ResolvedLinkPlan:
+     """The physical plan, derived here and owned here.
+@@ -2105,7 +2207,8 @@ class PICRequestTokenRegistry:
+ 
+         with host_recorder.span("token_budget_decision"):
+             recompute_initial_tokens = int(
+-                link_plan.get(
++                link_plan["repair_decision"]["selected_k"]
++                if link_plan.get("execution_mode") == "formal" else link_plan.get(
+                     "recompute_initial_tokens", link_plan.get("legolink_k", 16)
+                 )
+             )
+@@ -2273,6 +2376,9 @@ class PICRequestTokenRegistry:
+             resolved.apply_to(link_plan)
+         _emit_pic_trace(
+             "scheduler_link_prepared",
++            execution_mode=link_plan.get("execution_mode", "legacy_debug"),
++            framing_spec=link_plan.get("framing_spec"),
++            repair_decision=link_plan.get("repair_decision"),
+             phase="link",
+             request_id=link_plan.get("request_id"),
+             task_id=link_plan.get("task_id"),
+@@ -2723,6 +2829,11 @@ class PICRuntime:
+             self._validate_link_batch(forward_batch)
+             metadata = forward_batch.pic_request_metadata[0]
+             link_plan = metadata["link_plan"]
++            validate_runtime_execution_intent(link_plan)
++            if link_plan.get("execution_mode") == "formal":
++                actual_model = getattr(getattr(self.model_runner, "model_config", None), "model_path", None)
++                if actual_model != link_plan["framing_spec"]["model_id"]:
++                    raise PICRuntimeError("formal framing profile does not match loaded model")
+             full_input_ids = forward_batch.full_input_ids[0]
+         if metadata.get("scheduler_waiting_ns") is not None:
+             host_recorder.add_ns(
+@@ -2790,6 +2901,9 @@ class PICRuntime:
+         self._request_capacity_degraded = False
+         _emit_pic_trace(
+             "model_link_start",
++            execution_mode=link_plan.get("execution_mode", "legacy_debug"),
++            framing_spec=link_plan.get("framing_spec"),
++            repair_decision=link_plan.get("repair_decision"),
+             phase="link",
+             **trace_context,
+             recompute_mode=recompute_mode,
+-- 
+2.51.0.windows.2
+

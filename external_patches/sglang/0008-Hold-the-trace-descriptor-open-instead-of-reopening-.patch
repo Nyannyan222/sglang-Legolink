@@ -1,0 +1,110 @@
+From 16c9958198f071d923974b5465f29479ae5a8b44 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 14:48:51 +0800
+Subject: [PATCH 08/27] Hold the trace descriptor open instead of reopening per
+ event
+
+_append_jsonl called os.makedirs, os.open, os.write and os.close for every
+event. At four events per generated token, across a bind mount, that measured
+24.6 s of a 42.6 s route on 2026-09-02 -- 58% -- against an Original arm that
+cannot pay it at all, since stock SGLang has no _emit_pic_trace call and never
+receives a trace mount. Instrumentation that large stops observing the route
+and becomes it.
+
+One descriptor per path per process, created under a lock. The write is
+deliberately unchanged: one O_APPEND write per record, no user-space buffering.
+The workspace-capacity investigation read its evidence out of a trace whose
+scheduler had already taken SIGQUIT, and a buffer would have eaten exactly the
+records that explained the crash.
+
+A stale descriptor -- file replaced under a long-lived server -- is reopened
+once, and a path that cannot be opened at all is dropped rather than allowed to
+fail the request.
+---
+ python/sglang/srt/pic_runtime.py | 57 ++++++++++++++++++++++++++++----
+ 1 file changed, 51 insertions(+), 6 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 98865b9..c424fa0 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -15,6 +15,7 @@ import hashlib
+ import json
+ import logging
+ import os
++import threading
+ import time
+ from collections import OrderedDict
+ from dataclasses import dataclass, field
+@@ -65,18 +66,62 @@ _CUDA_COMPONENT_ALIASES = {
+ }
+ 
+ 
++_TRACE_DESCRIPTORS: dict[str, int] = {}
++_TRACE_DESCRIPTOR_LOCK = threading.Lock()
++
++
++def _trace_descriptor(path: str) -> int:
++    """One open append descriptor per path, per process.
++
++    The previous implementation paid os.makedirs, os.open and os.close on every
++    event. At four events per generated token, across a bind mount, that was
++    measured on 2026-09-02 as 24.6 s of a 42.6 s route -- 58% -- and it lands on
++    the patched deployment alone, because stock SGLang has no trace call to
++    make. Instrumentation that large does not observe the system, it replaces
++    the thing being observed.
++
++    Holding the descriptor keeps the write itself unchanged: still one O_APPEND
++    write per record, still no user-space buffering. That matters more than the
++    syscalls saved -- the workspace-capacity investigation read its evidence out
++    of a trace whose scheduler had already died on SIGQUIT, and a buffer would
++    have eaten exactly the records that explained the crash.
++    """
++
++    descriptor = _TRACE_DESCRIPTORS.get(path)
++    if descriptor is not None:
++        return descriptor
++    with _TRACE_DESCRIPTOR_LOCK:
++        descriptor = _TRACE_DESCRIPTORS.get(path)
++        if descriptor is not None:
++            return descriptor
++        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
++        descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
++        _TRACE_DESCRIPTORS[path] = descriptor
++        return descriptor
++
++
+ def _append_jsonl(path_template: str, record: dict[str, Any]) -> None:
+     path = path_template.format(pid=os.getpid())
+-    parent = os.path.dirname(os.path.abspath(path))
+-    os.makedirs(parent, exist_ok=True)
+     payload = (
+         json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
+     ).encode("utf-8")
+-    descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+     try:
+-        os.write(descriptor, payload)
+-    finally:
+-        os.close(descriptor)
++        os.write(_trace_descriptor(path), payload)
++    except OSError:
++        # A descriptor can go stale -- the file replaced or removed under a
++        # long-lived server. Reopen once; give up rather than let tracing take
++        # the request down with it.
++        with _TRACE_DESCRIPTOR_LOCK:
++            stale = _TRACE_DESCRIPTORS.pop(path, None)
++            if stale is not None:
++                try:
++                    os.close(stale)
++                except OSError:
++                    pass
++        try:
++            os.write(_trace_descriptor(path), payload)
++        except OSError:
++            pass
+ 
+ 
+ class _HostTimingRecorder:
+-- 
+2.51.0.windows.2
+

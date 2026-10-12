@@ -1,0 +1,125 @@
+From b400789240131f2d975c720431f8183f6eab2d00 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 9 Sep 2026 11:50:25 +0800
+Subject: [PATCH 14/27] DEBUG: capture post-remap cached K before sparse repair
+
+Temporary diagnostic for the offline/live divergence. Off unless
+SGLANG_PIC_DEBUG_POST_REMAP_K names an output file; when off the function
+returns before touching a tensor. Read-only: detach, copy to CPU, never write
+back. Samples a handful of rows at named global positions and layers.
+
+Placed immediately after _copy_linked_kv and before LegoLinkSparseRecompute,
+which is the earliest point where the runtime's K can be compared against an
+offline rotation of the cached block.
+
+Not production. Revert once the checkpoint question is settled.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 83 ++++++++++++++++++++++++++++++++
+ 1 file changed, 83 insertions(+)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index d981ba8..3946e4d 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -453,6 +453,78 @@ _CUDA_EVENT_REQUEST_COUNT = 0
+ _NATIVE_DECODE_ITERATION_COUNT = 0
+ 
+ 
++
++def _debug_capture_post_remap_k(pool, destination_slots, full_input_ids, link_plan, context):
++    """DEBUG ONLY. Dump post-remap cached K for a few rows, then return.
++
++    Off unless SGLANG_PIC_DEBUG_POST_REMAP_K names an output file. When off this
++    returns before touching a tensor, so ordinary requests are unaffected. It
++    only reads: every tensor is detached, copied to CPU and never written back.
++
++    Exists to answer one question -- does the K the runtime has after gather and
++    RoPE remap equal the K an offline rotation of the cached block predicts --
++    at the earliest point where the two can be compared.
++    """
++
++    path = os.getenv("SGLANG_PIC_DEBUG_POST_REMAP_K", "").strip()
++    if not path:
++        return
++    try:
++        raw = os.getenv("SGLANG_PIC_DEBUG_POST_REMAP_K_POSITIONS", "").strip()
++        wanted = [int(value) for value in raw.split(",") if value.strip()]
++        layers = [
++            int(value)
++            for value in os.getenv(
++                "SGLANG_PIC_DEBUG_POST_REMAP_K_LAYERS", "0"
++            ).split(",")
++            if value.strip()
++        ]
++        block_ranges = link_plan.get("block_ranges") or []
++        samples = []
++        for position in wanted:
++            if position < 0 or position >= len(destination_slots):
++                continue
++            slot = int(destination_slots[position].item())
++            owner = next(
++                (
++                    entry
++                    for entry in block_ranges
++                    if int(entry["start_token"]) <= position < int(entry["end_token"])
++                ),
++                None,
++            )
++            for layer_id in layers:
++                key = pool.get_key_buffer(layer_id)[slot].detach().to("cpu")
++                samples.append(
++                    {
++                        "layer": layer_id,
++                        "global_position": position,
++                        "local_position": (
++                            position - int(owner["start_token"]) if owner else None
++                        ),
++                        "cache_key": owner.get("cache_key") if owner else None,
++                        "semantic_block_id": owner.get("block_id") if owner else None,
++                        "token_id": (
++                            int(full_input_ids[position])
++                            if position < len(full_input_ids)
++                            else None
++                        ),
++                        "destination_slot": slot,
++                        "dtype": str(key.dtype),
++                        "shape": list(key.shape),
++                        "k": key.float().tolist(),
++                    }
++                )
++        with open(path, "a", encoding="utf-8") as handle:
++            handle.write(
++                json.dumps({"checkpoint": "post_remap_k", **context, "samples": samples})
++                + "\n"
++            )
++    except Exception as error:  # never let a debug dump break a request
++        logger.warning("post-remap K capture skipped: %s", error)
++
++
++
+ class PICRuntimeError(RuntimeError):
+     pass
+ 
+@@ -2989,6 +3061,17 @@ class PICRuntime:
+                 link_plan,
+             )
+         kv_link_s = _profile_elapsed(kv_link_started)
++        _debug_capture_post_remap_k(
++            forward_batch.token_to_kv_pool,
++            destination_slots,
++            full_input_ids,
++            link_plan,
++            {
++                "request_id": link_plan.get("request_id"),
++                "task_id": link_plan.get("task_id"),
++                "total_token_count": total_token_count,
++            },
++        )
+         logger.info(
+             "SGLang PIC link start blocks=%d linked_tokens=%d reused_tokens=%d "
+             "recompute_tokens=%d",
+-- 
+2.51.0.windows.2
+

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legolink-noc"
+version = "0.1.0"
+description = "NOC Context Manager and the patched SGLang RadixCache / PICRuntime (LegoLink) runtime: semantic sub-context KV reuse for agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+]
+# The host core uses the standard library only. Tokenizer modes other than `regex` need the extras below.
+dependencies = []
+
+[project.optional-dependencies]
+tokenizers = ["transformers>=4.50", "tokenizers>=0.20", "jinja2>=3.1"]
+agent = ["terminal-bench==0.2.18"]
+tests = ["pytest>=8", "torch>=2.4"]
+
+[tool.setuptools]
+# Flat layout: the two importable packages sit at the repository root next to scripts/, tests/ and the runtime patch files.
+packages = ["noc_context_manager", "terminal_bench_integration"]

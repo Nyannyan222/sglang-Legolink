@@ -1,0 +1,29 @@
+# Constraints for scripts/install_h200_environment.sh: the pins of the validated reference environment (configs/requirements-runtime-reference.txt) that matter for
+# reproducing the runtime's behaviour. A constraint, not a requirement: it only limits what pip may choose. A '+cuXYZ' local build tag is dropped on purpose so that the
+# torch build matching the cluster driver (TORCH_INDEX_URL) satisfies the pin. Review before changing; the audit records what is actually installed.
+#
+# CHANGED 2026-10-10 (Job 801 follow-up): transformers 5.6.0 -> 5.8.1, and `kernels` constrained to >=0.12.0,<0.13.
+#   transformers: the patched SGLang tree this package ships (PATCHED_SGLANG.json, tree d0c440cf...) declares `transformers==5.8.1` in python/pyproject.toml. The reference image's 5.6.0
+#     (configs/requirements-runtime-reference.txt) made `pip install -e <patched sglang>/python -c <this file>` unsatisfiable.
+#   kernels: pyproject.toml leaves `kernels` unpinned, so pip takes the newest release; transformers 5.8.1 declares `kernels>=0.12.0,<0.13` (requires_dist, extra "kernels"), and the reference
+#     image's 0.14.1 is outside that range. The range is taken from transformers' own metadata.
+#   Previous pins: transformers==5.6.0 (reference image). Verified on CPU: the Qwen3-32B config, tokenizer and chat template under 5.8.1
+#     (docs/qwen3_32b_cpu_evidence/transformers_compat_5.8.1.json). NOT verified here: the exact versions that finally ran on the H200; confirm with `pip freeze` on the cluster, and if they
+#     differ put the working pins in configs/constraints-h200.local.txt (an operator override that wins and is recorded with its hash) rather than editing this file silently.
+fastapi==0.136.1
+flashinfer-cubin==0.6.11.post1
+flashinfer-python==0.6.11.post1
+huggingface_hub==1.15.0
+Jinja2==3.1.6
+numpy==2.3.5
+pydantic==2.13.4
+pytest==9.0.3
+safetensors==0.7.0
+sglang-kernel==0.4.2.post2
+tokenizers==0.22.2
+torch==2.11.0
+transformers==5.8.1
+kernels>=0.12.0,<0.13
+triton==3.6.0
+uvicorn==0.47.0
+xgrammar==0.2.0

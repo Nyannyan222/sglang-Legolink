@@ -1,0 +1,529 @@
+From da2fc5783c22a1f989f93e6716f4b635bf47f55f Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 27 Aug 2026 15:34:29 +0800
+Subject: [PATCH 02/27] Treat FlashInfer workspace overflow as capacity, not
+ correctness
+
+The 2026-08-27 formal run lost all 30 trials to one oversized request: a
+paged-prefill plan needed 2.92 GB of workspace against 2.68 GB configured, the
+fail-closed SparseRepairAttentionError propagated out of ModelRunner.forward
+under the default SGLANG_PIC_LEGOLINK_ONLY=1, and the scheduler process died.
+
+Two defects combined.
+
+The split condition did not match the dispatch condition. The attention
+dispatcher selects paged prefill from environment alone, but _run_batched_recompute
+only split repair rows under flashinfer_full_row_batching, which additionally
+requires request-level row batching. With -AllowRequestRowBatchingOverride a
+request could turn row batching off, skip the split, and still reach paged
+prefill with a single 6,276-token row. Splitting is now gated on
+paged_attention_path_reachable(), which mirrors the dispatcher exactly.
+
+Capacity was handled like a correctness failure. Native sparse-repair attention
+computes the same logical mask and is the reference the correctness suite
+compares against, so a workspace overflow can be answered by degrading the
+operator for one request without weakening any LegoLink claim. Falling back to
+full prefill would forfeit the reuse claim and stays fail-closed.
+
+- SparseRepairCapacityError subclasses SparseRepairAttentionError, so existing
+  handlers still catch it; _is_capacity_exhaustion matches CUDA OOM by type and
+  the FlashInfer C++ allocator by message.
+- SGLANG_PIC_FLASHINFER_CAPACITY_POLICY selects adaptive (default) or strict.
+  Non-capacity failures fail closed under both.
+- PagedBatchCapacityMemo bisects a per-shape ceiling rather than predicting
+  FlashInfer's version-dependent batch_prefill_tmp_v formula: a failure halves
+  the ceiling, a success raises a floor the ceiling cannot drop below, and the
+  ceiling never collapses below 64 tokens. One request pays for the discovery
+  and later requests pre-split.
+- A degraded request keeps every remaining layer on native so one request never
+  mixes attention operators.
+- Capacity state is recorded in metadata and the batch-plan trace, so a run that
+  degraded is distinguishable from one that did not.
+
+Block pins were never leaked; _guard_legolink_release already released them in a
+finally and is unchanged.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/flashinfer_sparse_repair.py | 354 +++++++++++++++++-
+ python/sglang/srt/pic_runtime.py              |  18 +-
+ 2 files changed, 365 insertions(+), 7 deletions(-)
+
+diff --git a/python/sglang/srt/flashinfer_sparse_repair.py b/python/sglang/srt/flashinfer_sparse_repair.py
+index 664fd92..c408752 100644
+--- a/python/sglang/srt/flashinfer_sparse_repair.py
++++ b/python/sglang/srt/flashinfer_sparse_repair.py
+@@ -46,18 +46,280 @@ SPARSE_REPAIR_SKIP_EXACT_PAGED_METADATA_CACHE_ENV = (
+     "SGLANG_PIC_FLASHINFER_SKIP_EXACT_PAGED_METADATA_CACHE"
+ )
+ SPARSE_REPAIR_PROFILE_RANGES_ENV = "SGLANG_PIC_PROFILE_RANGES_ENABLED"
++SPARSE_REPAIR_CAPACITY_POLICY_ENV = "SGLANG_PIC_FLASHINFER_CAPACITY_POLICY"
++SPARSE_REPAIR_MAX_PAGED_BATCH_Q_TOKENS_ENV = (
++    "SGLANG_PIC_FLASHINFER_MAX_PAGED_BATCH_Q_TOKENS"
++)
+ 
+ _DEFAULT_PLAN_CACHE_ENTRIES = 8
+ _DEFAULT_PLAN_CACHE_BYTES = 2 * 1024 * 1024 * 1024
+ _DEFAULT_METADATA_CACHE_ENTRIES = 16
+ _DEFAULT_METADATA_CACHE_BYTES = 512 * 1024 * 1024
+ _DEFAULT_PAGED_WRAPPER_WORKSPACE_BYTES = 1024 * 1024 * 1024
++_DEFAULT_MAX_PAGED_BATCH_Q_TOKENS = 2048
++# A learned ceiling is never allowed to collapse to a value that cannot make
++# progress; below this the request degrades to native attention instead.
++_MIN_PAGED_BATCH_Q_TOKENS = 64
+ 
+ 
+ class SparseRepairAttentionError(RuntimeError):
+     pass
+ 
+ 
++class SparseRepairCapacityError(SparseRepairAttentionError):
++    """FlashInfer could not fit this shape in its workspace.
++
++    This is deliberately distinct from a compatibility or correctness failure.
++    Native sparse-repair attention is the reference implementation for the same
++    logical mask, so a capacity failure can be answered by degrading the
++    operator for this request without weakening any LegoLink claim. Compare
++    :class:`SparseRepairAttentionError`, which means the request must not run.
++    """
++
++
++_CAPACITY_ERROR_MARKERS = (
++    "buffer overflow when allocating",
++    "aligned_alloc",
++    "alignedallocator",
++    "out of memory",
++    "workspace buffer size",
++)
++
++
++def _is_capacity_exhaustion(exc: BaseException) -> bool:
++    """Recognise workspace/allocator exhaustion from FlashInfer or CUDA.
++
++    FlashInfer raises a plain ``RuntimeError`` from its C++ ``AlignedAllocator``
++    rather than a typed exception, so the message is the only reliable signal.
++    ``torch.cuda.OutOfMemoryError`` is matched by type.
++    """
++
++    if isinstance(exc, SparseRepairCapacityError):
++        return True
++    out_of_memory = getattr(torch.cuda, "OutOfMemoryError", None)
++    if out_of_memory is not None and isinstance(exc, out_of_memory):
++        return True
++    message = str(exc).lower()
++    return any(marker in message for marker in _CAPACITY_ERROR_MARKERS)
++
++
++def sparse_repair_capacity_policy() -> str:
++    """``adaptive`` degrades a too-large request; ``strict`` fails it closed."""
++
++    value = os.getenv(SPARSE_REPAIR_CAPACITY_POLICY_ENV, "adaptive").strip().lower()
++    if value not in {"adaptive", "strict"}:
++        raise SparseRepairAttentionError(
++            f"{SPARSE_REPAIR_CAPACITY_POLICY_ENV} must be adaptive or strict; "
++            f"got {value!r}."
++        )
++    return value
++
++
++class PagedBatchCapacityMemo:
++    """Learned per-shape ceiling on FlashInfer paged-prefill query tokens.
++
++    FlashInfer sizes ``batch_prefill_tmp_v`` from a split-k decomposition whose
++    exact formula is version and backend dependent, so this does not attempt to
++    predict the requirement. It bisects instead: a plan failure at ``q_tokens``
++    lowers the ceiling below that shape, and a success raises the known-good
++    floor. Requests after the first failure pre-split under the learned ceiling,
++    so one request pays for the discovery rather than the whole server.
++    """
++
++    def __init__(self) -> None:
++        self._lock = threading.Lock()
++        self._ceiling: dict[tuple[Any, ...], int] = {}
++        self._floor: dict[tuple[Any, ...], int] = {}
++        self._failures: dict[tuple[Any, ...], int] = {}
++
++    def cap_for(self, key: tuple[Any, ...], configured_cap: int) -> int:
++        with self._lock:
++            learned = self._ceiling.get(key)
++        if learned is None:
++            return configured_cap
++        if configured_cap <= 0:
++            return learned
++        return min(configured_cap, learned)
++
++    def record_failure(self, key: tuple[Any, ...], q_tokens: int) -> int:
++        """Halve the ceiling below the shape that failed; return the new cap."""
++
++        with self._lock:
++            self._failures[key] = self._failures.get(key, 0) + 1
++            candidate = max(int(q_tokens) // 2, _MIN_PAGED_BATCH_Q_TOKENS)
++            floor = self._floor.get(key)
++            if floor is not None:
++                # Never drop below a shape already proven to plan successfully.
++                candidate = max(candidate, floor)
++            previous = self._ceiling.get(key)
++            self._ceiling[key] = (
++                candidate if previous is None else min(previous, candidate)
++            )
++            return self._ceiling[key]
++
++    def record_success(self, key: tuple[Any, ...], q_tokens: int) -> None:
++        with self._lock:
++            previous = self._floor.get(key)
++            if previous is None or q_tokens > previous:
++                self._floor[key] = int(q_tokens)
++
++    def snapshot(self) -> dict[str, Any]:
++        with self._lock:
++            return {
++                "learned_ceilings": {
++                    "|".join(str(part) for part in key): value
++                    for key, value in self._ceiling.items()
++                },
++                "known_good_floors": {
++                    "|".join(str(part) for part in key): value
++                    for key, value in self._floor.items()
++                },
++                "capacity_failures": sum(self._failures.values()),
++            }
++
++    def clear(self) -> None:
++        with self._lock:
++            self._ceiling.clear()
++            self._floor.clear()
++            self._failures.clear()
++
++
++_PAGED_CAPACITY_MEMO = PagedBatchCapacityMemo()
++
++
++def paged_batch_capacity_key(
++    *,
++    device: Any,
++    workspace_bytes: int,
++    qo_heads: int,
++    kv_heads: int,
++    head_dim: int,
++    q_dtype: Any,
++    kv_dtype: Any,
++    fixed_split_size: int,
++) -> tuple[Any, ...]:
++    """Shape class a learned capacity ceiling is valid for."""
++
++    return (
++        str(device),
++        int(workspace_bytes),
++        int(qo_heads),
++        int(kv_heads),
++        int(head_dim),
++        str(q_dtype),
++        str(kv_dtype),
++        int(fixed_split_size),
++    )
++
++
++def configured_paged_batch_q_token_cap() -> int:
++    return _positive_int_env(
++        SPARSE_REPAIR_MAX_PAGED_BATCH_Q_TOKENS_ENV,
++        _DEFAULT_MAX_PAGED_BATCH_Q_TOKENS,
++    )
++
++
++def resolve_paged_batch_q_token_cap(
++    *,
++    device: Any,
++    workspace_bytes: int,
++    qo_heads: int,
++    kv_heads: int,
++    head_dim: int,
++    q_dtype: Any,
++    kv_dtype: Any,
++    fixed_split_size: int,
++    configured_cap: int | None = None,
++) -> int:
++    """Configured paged-batch cap, lowered by anything learned for this shape."""
++
++    key = paged_batch_capacity_key(
++        device=device,
++        workspace_bytes=workspace_bytes,
++        qo_heads=qo_heads,
++        kv_heads=kv_heads,
++        head_dim=head_dim,
++        q_dtype=q_dtype,
++        kv_dtype=kv_dtype,
++        fixed_split_size=fixed_split_size,
++    )
++    if configured_cap is None:
++        configured_cap = configured_paged_batch_q_token_cap()
++    return _PAGED_CAPACITY_MEMO.cap_for(key, configured_cap)
++
++
++def _paged_capacity_key_for(
++    layer: Any,
++    q: torch.Tensor,
++    key_buffer: torch.Tensor,
++    workspace_bytes: int,
++    fixed_split_size: int,
++) -> tuple[Any, ...]:
++    return paged_batch_capacity_key(
++        device=q.device,
++        workspace_bytes=workspace_bytes,
++        qo_heads=int(layer.tp_q_head_num),
++        kv_heads=int(layer.tp_k_head_num),
++        head_dim=int(layer.head_dim),
++        q_dtype=q.dtype,
++        kv_dtype=key_buffer.dtype,
++        fixed_split_size=fixed_split_size,
++    )
++
++
++def effective_paged_batch_q_token_cap(configured_cap: int | None = None) -> int:
++    """Configured cap lowered by the smallest ceiling learned on this server.
++
++    Callers that plan repair rows do not yet hold an attention layer, so they
++    cannot build an exact shape key. A server serves one model on one device in
++    every configuration this project runs, so the minimum learned ceiling is the
++    right conservative answer; borrowing another shape's ceiling can only split
++    more finely, never less, and never changes the computed result.
++    """
++
++    if configured_cap is None:
++        configured_cap = configured_paged_batch_q_token_cap()
++    learned = _PAGED_CAPACITY_MEMO.snapshot()["learned_ceilings"]
++    if not learned:
++        return configured_cap
++    lowest = min(learned.values())
++    if configured_cap <= 0:
++        return lowest
++    return min(configured_cap, lowest)
++
++
++def paged_attention_path_reachable(requested_backend: str) -> bool:
++    """Whether this configuration can route repair rows to paged prefill.
++
++    The dispatcher selects the paged path from environment alone, so repair-row
++    splitting must follow the same condition rather than the narrower
++    full-row-batching gate. Otherwise a request that turns row batching off
++    still reaches paged prefill, but with unsplit rows.
++    """
++
++    if requested_backend != "flashinfer":
++        return False
++    grouped_mode = os.getenv(
++        SPARSE_REPAIR_GROUPED_ATTENTION_MODE_ENV, "per_row"
++    ).strip().lower()
++    if grouped_mode != "paged_batched":
++        return False
++    return os.getenv(SPARSE_REPAIR_GROUPED_ROWS_ENV, "0").strip().lower() in {
++        "1",
++        "true",
++        "yes",
++        "on",
++    }
++
++
++def paged_batch_capacity_snapshot() -> dict[str, Any]:
++    return _PAGED_CAPACITY_MEMO.snapshot()
++
++
++def clear_paged_batch_capacity_memo() -> None:
++    _PAGED_CAPACITY_MEMO.clear()
++
++
+ def requested_sparse_repair_backend() -> str:
+     value = os.getenv(SPARSE_REPAIR_BACKEND_ENV, "native").strip().lower()
+     if value not in {"native", "flashinfer", "auto", "hybrid"}:
+@@ -1305,6 +1567,11 @@ def _try_flashinfer_paged_rows(
+         raise SparseRepairAttentionError(
+             "paged grouped attention must be forced to FlashInfer"
+         )
++    if metadata.get("actual_backend") == "native":
++        # An earlier layer of this request degraded on capacity. Keep every
++        # remaining layer on the same operator so one request never mixes
++        # backends.
++        return None
+     ranges = _grouped_row_ranges(metadata)
+     if int(forward_batch.batch_size) != len(ranges):
+         raise SparseRepairAttentionError(
+@@ -1453,10 +1720,32 @@ def _try_flashinfer_paged_rows(
+             metadata["flashinfer_backend"] = str(
+                 getattr(state.wrapper, "_backend", "fa2")
+             )
++            _PAGED_CAPACITY_MEMO.record_success(
++                _paged_capacity_key_for(layer, q, key_buffer, workspace_bytes,
++                                        fixed_split_size),
++                int(q.shape[0]),
++            )
+         except Exception as exc:
++            capacity = _is_capacity_exhaustion(exc)
+             reason = f"FlashInfer paged plan failed: {type(exc).__name__}: {exc}"
+-            metadata["compatibility_status"] = "plan_failed"
++            metadata["compatibility_status"] = (
++                "plan_capacity_exhausted" if capacity else "plan_failed"
++            )
+             metadata["fallback_reason"] = reason
++            if capacity:
++                fixed_split_size = _positive_int_env(
++                    SPARSE_REPAIR_FIXED_SPLIT_SIZE_ENV, 128
++                )
++                learned_cap = _PAGED_CAPACITY_MEMO.record_failure(
++                    _paged_capacity_key_for(
++                        layer, q, key_buffer, workspace_bytes, fixed_split_size
++                    ),
++                    int(q.shape[0]),
++                )
++                metadata["capacity_q_tokens"] = int(q.shape[0])
++                metadata["capacity_learned_cap"] = learned_cap
++                metadata["capacity_workspace_bytes"] = workspace_bytes
++                raise SparseRepairCapacityError(reason) from exc
+             raise SparseRepairAttentionError(reason) from exc
+     else:
+         state = metadata["_wrapper_state"]
+@@ -1487,9 +1776,25 @@ def _try_flashinfer_paged_rows(
+         metadata["actual_backend"] = "flashinfer_paged_prefill"
+         return output.view(-1, layer.tp_q_head_num * layer.head_dim)
+     except Exception as exc:
++        capacity = _is_capacity_exhaustion(exc)
+         reason = f"FlashInfer paged run failed: {type(exc).__name__}: {exc}"
+-        metadata["compatibility_status"] = "run_failed"
++        metadata["compatibility_status"] = (
++            "run_capacity_exhausted" if capacity else "run_failed"
++        )
+         metadata["fallback_reason"] = reason
++        if capacity:
++            metadata["capacity_q_tokens"] = int(q.shape[0])
++            metadata["capacity_learned_cap"] = _PAGED_CAPACITY_MEMO.record_failure(
++                _paged_capacity_key_for(
++                    layer,
++                    q,
++                    key_buffer,
++                    workspace_bytes,
++                    _positive_int_env(SPARSE_REPAIR_FIXED_SPLIT_SIZE_ENV, 128),
++                ),
++                int(q.shape[0]),
++            )
++            raise SparseRepairCapacityError(reason) from exc
+         raise SparseRepairAttentionError(reason) from exc
+ 
+ 
+@@ -1645,6 +1950,37 @@ def try_flashinfer_sparse_attention(
+     save_kv_cache: bool,
+ ) -> torch.Tensor | None:
+     metadata = getattr(forward_batch, "pic_sparse_repair_metadata", None)
++    try:
++        return _dispatch_flashinfer_sparse_attention(
++            q, k, v, layer, forward_batch, save_kv_cache, metadata
++        )
++    except SparseRepairAttentionError as error:
++        if metadata is None or not _is_capacity_exhaustion(error):
++            raise
++        if sparse_repair_capacity_policy() == "strict":
++            raise
++        # Capacity, not correctness. Native sparse-repair attention computes the
++        # same logical mask, so degrading this request keeps the LegoLink result
++        # exact while leaving the server available for the next request. The
++        # learned ceiling recorded above makes later requests pre-split instead
++        # of rediscovering the limit.
++        metadata["actual_backend"] = "native"
++        metadata["selected_backend"] = "native"
++        metadata["capacity_degraded"] = True
++        metadata["capacity_degraded_reason"] = str(error)
++        metadata["decision_reason"] = "flashinfer_workspace_capacity_exhausted"
++        return None
++
++
++def _dispatch_flashinfer_sparse_attention(
++    q: torch.Tensor,
++    k: torch.Tensor,
++    v: torch.Tensor,
++    layer: Any,
++    forward_batch: Any,
++    save_kv_cache: bool,
++    metadata: dict[str, Any] | None,
++) -> torch.Tensor | None:
+     grouped_mode = os.getenv(
+         SPARSE_REPAIR_GROUPED_ATTENTION_MODE_ENV, "per_row"
+     ).strip().lower()
+@@ -1879,11 +2215,16 @@ def _try_flashinfer_sparse_attention_single(
+                 getattr(state.wrapper, "_backend", "unknown")
+             )
+         except Exception as exc:
++            capacity = _is_capacity_exhaustion(exc)
+             reason = f"FlashInfer plan failed: {type(exc).__name__}: {exc}"
+-            metadata["compatibility_status"] = "plan_failed"
++            metadata["compatibility_status"] = (
++                "plan_capacity_exhausted" if capacity else "plan_failed"
++            )
+             metadata["fallback_reason"] = reason
+             metadata["actual_backend"] = "native"
+             if requested in {"flashinfer", "hybrid"}:
++                if capacity:
++                    raise SparseRepairCapacityError(reason) from exc
+                 raise SparseRepairAttentionError(reason) from exc
+             return None
+     else:
+@@ -1917,11 +2258,16 @@ def _try_flashinfer_sparse_attention_single(
+             output = output.view(-1, layer.tp_q_head_num * layer.head_dim)
+         return output
+     except Exception as exc:
++        capacity = _is_capacity_exhaustion(exc)
+         reason = f"FlashInfer run failed: {type(exc).__name__}: {exc}"
+-        metadata["compatibility_status"] = "run_failed"
++        metadata["compatibility_status"] = (
++            "run_capacity_exhausted" if capacity else "run_failed"
++        )
+         metadata["fallback_reason"] = reason
+         metadata["actual_backend"] = "native"
+         if requested in {"flashinfer", "hybrid"}:
++            if capacity:
++                raise SparseRepairCapacityError(reason) from exc
+             raise SparseRepairAttentionError(reason) from exc
+         return None
+ 
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 41099b7..777e4c5 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -2502,6 +2502,9 @@ class PICRuntime:
+         ranges = _contiguous_ranges(imp_indices)
+         from sglang.srt.flashinfer_sparse_repair import (
+             _component_ranges_option,
++            effective_paged_batch_q_token_cap,
++            paged_attention_path_reachable,
++            paged_batch_capacity_snapshot,
+             requested_sparse_repair_backend,
+             select_hybrid_request_backend,
+         )
+@@ -2563,9 +2566,14 @@ class PICRuntime:
+             )
+         original_sparse_repair_ranges = list(ranges)
+         flashinfer_max_paged_batch_q_tokens = 0
+-        if flashinfer_full_row_batching:
+-            flashinfer_max_paged_batch_q_tokens = _positive_int_from_env(
+-                "SGLANG_PIC_FLASHINFER_MAX_PAGED_BATCH_Q_TOKENS", 2048
++        # The attention dispatcher selects paged prefill from environment alone.
++        # Split whenever that path is reachable, not only when full row batching
++        # is on, or a request that overrides row batching off still reaches
++        # paged prefill with unsplit rows and overflows the workspace.
++        paged_path_reachable = paged_attention_path_reachable(requested_backend)
++        if flashinfer_full_row_batching or paged_path_reachable:
++            flashinfer_max_paged_batch_q_tokens = (
++                effective_paged_batch_q_token_cap()
+             )
+             ranges = _split_ranges_by_max_repair_tokens(
+                 ranges,
+@@ -2619,6 +2627,10 @@ class PICRuntime:
+         batch_plan_trace["flashinfer_workspace_split_applied"] = (
+             ranges != original_sparse_repair_ranges
+         )
++        batch_plan_trace["flashinfer_paged_path_reachable"] = paged_path_reachable
++        batch_plan_trace["flashinfer_paged_capacity"] = (
++            paged_batch_capacity_snapshot()
++        )
+         _emit_pic_trace(
+             "sparse_repair_batch_plan",
+             phase="link",
+-- 
+2.51.0.windows.2
+

@@ -1,9 +1,0 @@
-context_field,tool_name,tool_type,is_mutating_tool,rows,avg_tokens,avg_cached,avg_prefill,cached_ratio,avg_latency_s
-conversation_history,,,,12,307.5,153.25,154.25,0.4984,0.0895
-task_metadata,,,,6,241.67,120.33,121.33,0.4979,0.0901
-tool_definitions,,,,6,140.0,88.5,51.5,0.6321,0.0961
-tool_history_output,read_file,filesystem_read,False,6,404.0,201.5,202.5,0.4988,0.1249
-tool_history_output,web_search,retrieval,False,6,258.33,128.67,129.67,0.4981,0.085
-tool_history_output,write_file,filesystem_write,True,6,217.33,108.17,109.17,0.4977,0.0872
-user_prompt,,,,6,331.67,198.4,127.2,0.4985,1.4746
-workspace_evidence,,,,30,1391.87,695.43,696.43,0.4996,0.099

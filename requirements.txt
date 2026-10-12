@@ -1,0 +1,8 @@
+# CPU-only host + test requirements. The patched SGLang runtime is built separately (docs/INSTALLATION.md, section B).
+# The host core (noc_context_manager) needs only the standard library; these are for the tests and the tokenizer modes.
+pytest>=8
+torch>=2.4          # a CPU build is enough: the runtime tests load the shipped runtime source files by path and run on CPU tensors
+transformers>=4.50  # tokenizer_mode=sglang/local (optional for tokenizer_mode=regex)
+tokenizers>=0.20
+jinja2>=3.1
+# Optional: terminal-bench==0.2.18 (the real package behind terminal_bench_integration; without it a labelled compatibility shim is used)

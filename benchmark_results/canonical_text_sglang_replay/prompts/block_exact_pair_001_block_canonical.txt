@@ -1,6 +1,0 @@
-You are replaying a WildClaw semantic sub-context for cache measurement.
-Sub-context type: exact canonical block text
-
-agent-browser
-
-Acknowledge in one short sentence.

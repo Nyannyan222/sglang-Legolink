@@ -1,0 +1,96 @@
+From 9d473da58d64da1a31fb70a5b66471fc83cd6877 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 18:13:06 +0800
+Subject: [PATCH 22/27] runtime: let group promotion participate in cache
+ eviction
+
+EXPERIMENTAL, behind SGLANG_PIC_EXPERIMENTAL_GROUP_PROMOTION and the
+request's promote_reconstructed_group, both off by default.
+
+Promotion called allocator.alloc directly, so near capacity it refused
+with allocation_failed even when eviction could have made room -- safe,
+and useless exactly when caching matters (394 of 496 promotions in an
+unflushed run). It now calls the scheduler's own evict_from_tree_cache
+first, only when the pool is short, the way every ordinary allocation
+does. That helper evicts unlocked radix leaves and LegoLink blocks with
+no reader and no pin, so neither the members this Link is reading
+(reserved) nor the request's own rows (not yet in the tree) can be freed.
+
+An eviction error is a skip before any slot is taken; an eviction that
+frees too little is still a clean allocation_failed. A
+group_promotion_eviction trace row records the pool before and after.
+
+Live, pool of 305,638 tokens overfilled with 356K tokens of filler:
+before, allocation_failed and a later fail-closed miss; after, 6,987
+tokens evicted, the group registered and the next request hit it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 47 +++++++++++++++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 3bdd915..0445fd6 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -5141,11 +5141,56 @@ class PICRuntime:
+ 
+         started = _profile_start()
+         source_slots = destination_slots[group_start:group_end].long()
++
++        def available(pool_allocator: Any) -> Optional[int]:
++            size = getattr(pool_allocator, "available_size", None)
++            try:
++                return int(size()) if callable(size) else None
++            except Exception:  # noqa: BLE001
++                return None
++
++        # Make room the way every ordinary allocation does, instead of refusing
++        # whenever the pool happens to be full. This is the scheduler's own
++        # helper: it evicts unlocked radix leaves and LegoLink blocks with no
++        # reader and no pin, so neither the members this Link is reading
++        # (reserved) nor this request's rows (not in the tree yet) can be what
++        # it frees.
++        available_before = available(allocator)
++        evicted_tokens = 0
++        if available_before is not None and available_before < token_count:
++            try:
++                from sglang.srt.mem_cache.common import evict_from_tree_cache
++
++                evict_from_tree_cache(tree_cache, token_count)
++            except Exception as error:  # noqa: BLE001 - never fail a served request
++                skip(
++                    "eviction_failed",
++                    token_count=token_count,
++                    error=str(error)[:300],
++                )
++                return None
++            available_after = available(allocator)
++            evicted_tokens = max(0, int(available_after or 0) - available_before)
++            _emit_pic_trace(
++                "group_promotion_eviction",
++                phase="link",
++                **trace_context,
++                cache_key=group_key,
++                token_count=token_count,
++                available_before=available_before,
++                available_after=available_after,
++                evicted_tokens=evicted_tokens,
++            )
+         new_slots = allocator.alloc(token_count)
+         if new_slots is None or len(new_slots) != token_count:
+             if new_slots is not None:
+                 allocator.free(new_slots)
+-            skip("allocation_failed", token_count=token_count)
++            skip(
++                "allocation_failed",
++                token_count=token_count,
++                available_before=available_before,
++                evicted_tokens=evicted_tokens,
++            )
+             return None
+         new_slots = new_slots.long()
+ 
+-- 
+2.51.0.windows.2
+

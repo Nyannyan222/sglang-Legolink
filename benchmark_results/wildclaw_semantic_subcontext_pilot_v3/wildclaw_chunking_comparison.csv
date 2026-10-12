@@ -1,4 +1,0 @@
-method,sub_context_count,avg_sub_context_chars,avg_context_reduction,avg_independence,avg_relevance,avg_completeness,avg_redundancy_risk,manual_review_status
-file_based,10,1036.4,0.7855,0.735,0.3,0.7461,0.2,pending
-fixed_size,5,2696.4,0.3846,0.6,0.6688,0.6343,0.35,pending
-llm_semantic,10,201.7,0.8797,0.3,0.3,0.3,0.0,pending

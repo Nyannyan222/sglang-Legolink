@@ -1,0 +1,13 @@
+LegoLink / NOC Context Manager
+Copyright 2026 the repository authors
+
+This repository is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It contains material derived from SGLang (https://github.com/sgl-project/sglang), which is licensed under the Apache License, Version 2.0:
+
+  * external_patches/sglang/*.patch   a patch series against SGLang commit cd012ada58ac317dd2e9df4ac87b71c104874e39
+  * patched_sglang_files/             the 27 files the series adds or changes, as they are after the series is applied (23 are modified SGLang files)
+  * upstream_support_files/           five unmodified SGLang files at that commit, included so that CPU tests can read them
+
+Those files remain subject to the notices of the SGLang project; they are modified as described in the patch series. SGLang itself is not
+redistributed here: scripts/build_patched_sglang.sh fetches it from its upstream repository.

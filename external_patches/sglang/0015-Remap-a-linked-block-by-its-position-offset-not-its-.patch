@@ -1,0 +1,133 @@
+From eaed72ed08d0858af90690cb35d6b8fdc4ba8632 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 9 Sep 2026 12:11:46 +0800
+Subject: [PATCH 15/27] Remap a linked block by its position offset, not its
+ ordinal
+
+`_copy_linked_kv` decided the RoPE global-position remap with `if block_index:`
+and the batched path with `prefix_token_count = block_specs[0]["token_count"]`.
+Both encode the same assumption: the first block starts at global position 0,
+so its cached block-local angles are already the ones the request needs.
+
+That holds for the legacy layout and fails under normalized framing, where
+block 0 begins behind a 24-token chat prefix. Its rows were then written back
+unrotated at a uniform 24-position offset. Full repair recomputes every row and
+overwrites them, which is why the failure only ever appeared under partial
+sparse repair -- and why it looked like a repair-quality limit rather than a
+link bug. Direct runtime tensor capture settled it: post-remap cached K matched
+block-local K at cosine 1.00000 and matched the rotated expectation at 0.99.
+
+`global_positions` is built as `local_positions + start` in both paths, so
+`start` is exactly the local->global delta and `start != 0` is equivalent to
+comparing the two position tensors, without a device round trip. Blocks whose
+positions are already correct still skip the remap, so the legacy layout keeps
+its bytes rather than paying an identity rotation and its rounding.
+
+The Triton kernel's `prefix_token_count` keeps its meaning -- leading tokens
+whose local position equals their global position -- and the caller now passes
+0 when block 0 is offset, so no kernel change is needed.
+
+`rope_remapped` in the `kv_block_linked` trace, and the emission of
+`rope_global_position_remap`, now follow the actual decision instead of the
+block ordinal, so the trace stops reporting a remap that did not happen.
+---
+ python/sglang/srt/pic_runtime.py | 34 ++++++++++++++++++++++++++------
+ 1 file changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 3946e4d..33ee804 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -3875,6 +3875,15 @@ class PICRuntime:
+                     end - start, dtype=torch.long, device=block_slots.device
+                 )
+                 global_positions = local_positions + start
++                # Remap iff the cached rows carry RoPE angles for positions
++                # other than the ones this request needs. `global_positions`
++                # is `local_positions + start` one line above, so `start` is
++                # exactly the local->global delta and this scalar test is
++                # equivalent to `(local_positions != global_positions).any()`
++                # without the device round trip. Block ordinal does not answer
++                # the question: under normalized framing block 0 sits behind a
++                # chat prefix at a nonzero offset and must be remapped.
++                needs_rope_remap = start != 0
+             block_timing = {
+                 "kv_retrieval_s": 0.0,
+                 "rope_remap_s": 0.0,
+@@ -3914,7 +3923,7 @@ class PICRuntime:
+                 timings["kv_retrieval_cuda_ms"] += retrieval_cuda_ms
+                 block_timing["kv_retrieval_s"] += retrieval_s
+                 block_timing["kv_retrieval_cuda_ms"] += retrieval_cuda_ms
+-                if block_index:
++                if needs_rope_remap:
+                     rope_started = _profile_start()
+                     rope_cuda_started = _cuda_event_start("rope_remap")
+                     with _profile_range("LegoLinkRoPERemap"):
+@@ -3974,7 +3983,7 @@ class PICRuntime:
+                     else {"count": end - start, "values": [], "truncated": True}
+                 ),
+                 destination_slots=_trace_values(block_slots),
+-                rope_remapped=bool(block_index),
++                rope_remapped=needs_rope_remap,
+                 layers_written=self.model_runner.end_layer
+                 - self.model_runner.start_layer,
+                 kv_writeback="index_copy",
+@@ -4055,6 +4064,11 @@ class PICRuntime:
+                         "destination_slots": block_slots,
+                         "local_positions": local_positions,
+                         "global_positions": local_positions + start,
++                        # See `_copy_linked_kv`: `start` is the local->global
++                        # position delta, not merely the block's offset in the
++                        # plan, so it alone decides whether this block's cached
++                        # RoPE angles are already the ones the request needs.
++                        "needs_rope_remap": start != 0,
+                         "repair_token_count": sum(
+                             start <= position < end
+                             for position in unique_repair_positions
+@@ -4103,7 +4117,15 @@ class PICRuntime:
+                     non_blocking=True,
+                 )
+ 
+-        prefix_token_count = int(block_specs[0]["token_count"])
++        # The leading run of tokens whose local position already equals its
++        # global position; both the torch tail slice and the Triton kernel skip
++        # the remap for exactly these. Only block 0 can begin at global 0, and
++        # when it does not, there is no identity prefix at all.
++        prefix_token_count = (
++            0
++            if block_specs[0]["needs_rope_remap"]
++            else int(block_specs[0]["token_count"])
++        )
+         tail_token_count = int(all_local_positions.numel()) - prefix_token_count
+         repair_token_count = len(repair_offsets)
+         triton_boundary_repair_active = all_repair_mask is not None
+@@ -4722,7 +4744,7 @@ class PICRuntime:
+             )
+             rope_share = (
+                 int(spec["token_count"]) / tail_tokens
+-                if spec["block_index"] and tail_tokens
++                if spec["needs_rope_remap"] and tail_tokens
+                 else 0.0
+             )
+             block_timing = {
+@@ -4738,7 +4760,7 @@ class PICRuntime:
+                 * token_share,
+             }
+             snapshot = spec["snapshot"]
+-            if spec["block_index"]:
++            if spec["needs_rope_remap"]:
+                 _emit_pic_trace(
+                     "rope_global_position_remap",
+                     phase="link",
+@@ -4777,7 +4799,7 @@ class PICRuntime:
+                     }
+                 ),
+                 destination_slots=_trace_values(spec["destination_slots"]),
+-                rope_remapped=bool(spec["block_index"]),
++                rope_remapped=spec["needs_rope_remap"],
+                 layers_written=layer_count,
+                 kv_writeback=(
+                     ("triton_fused_gather_rope_scatter_boundary_repair_aware")
+-- 
+2.51.0.windows.2
+

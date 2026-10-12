@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "task_id", "session_revision", "event_type", "source_id", "raw_text", "timestamp", "sequence_number", "metadata"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "session_revision": {"type": "integer", "minimum": 1},
+    "event_type": {"enum": ["user_request", "task_instruction", "planner_output", "tool_definition", "tool_call", "tool_output", "conversation_message", "workspace_file", "task_metadata", "unclassified"]},
+    "source_id": {"type": "string", "minLength": 1},
+    "raw_text": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "sequence_number": {"type": "integer", "minimum": 1},
+    "metadata": {"type": "object"}
+  }
+}

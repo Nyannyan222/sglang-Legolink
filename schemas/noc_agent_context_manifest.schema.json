@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentContextManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "agent_id", "request_id", "session_revision", "objective", "selected_sub_context_ids", "selected_cache_keys", "mutable_text", "full_session_tokens", "candidate_context_tokens", "selected_context_tokens", "context_reduction_tokens", "context_reduction_ratio", "selection_reason", "excluded_reason", "selection_order", "excluded_sub_context_ids", "context_token_budget"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "agent_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "session_revision": {"type": "integer", "minimum": 1},
+    "objective": {"type": "string"},
+    "selected_sub_context_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "selected_cache_keys": {"type": "array", "items": {"type": "string"}},
+    "mutable_text": {"type": "string"},
+    "full_session_tokens": {"type": "integer", "minimum": 0},
+    "candidate_context_tokens": {"type": "integer", "minimum": 0},
+    "selected_context_tokens": {"type": "integer", "minimum": 0},
+    "context_reduction_tokens": {"type": "integer", "minimum": 0},
+    "context_reduction_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "selection_reason": {"type": "object", "additionalProperties": {"type": "string"}},
+    "excluded_reason": {"type": "object", "additionalProperties": {"type": "string"}},
+    "selection_order": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "excluded_sub_context_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "context_token_budget": {"type": "integer", "minimum": 0}
+  }
+}

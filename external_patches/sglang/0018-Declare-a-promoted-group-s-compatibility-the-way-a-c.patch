@@ -1,0 +1,46 @@
+From 3c357fd4707fed6d28aa426d3650c6cf0e0baea6 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 12:36:50 +0800
+Subject: [PATCH 18/27] Declare a promoted group's compatibility the way a
+ compiled block does
+
+A promoted block registered with whatever _legolink_compatibility happened to
+hold is refused by lookup_legolink_blocks as a fingerprint mismatch, so it
+registers cleanly and is never reusable -- which is what the first live
+session measured. Build it the way pin_finished_compile does: the
+deployment's fingerprints from get_legolink_compatibility, overlaid with the
+policy versions this request named.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index f702a70..1a58e15 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -5147,7 +5147,19 @@ class PICRuntime:
+                     token_count=token_count,
+                 )
+                 return None
+-            compatibility = dict(getattr(self, "_legolink_compatibility", {}) or {})
++            # The promoted block must declare the compatibility the request
++            # that reuses it will declare, or `lookup_legolink_blocks` rejects
++            # it as a fingerprint mismatch and the reuse never happens. This is
++            # the same construction `pin_finished_compile` uses for a compiled
++            # block -- the deployment's fingerprints, overlaid with the policy
++            # versions this request named.
++            compatibility = self.get_legolink_compatibility(
++                adapter_id=link_plan.get("adapter_id")
++            )
++            for field in ("segmentation_policy_version", "legolink_policy_version"):
++                declared = link_plan.get(field)
++                if declared is not None:
++                    compatibility[field] = str(declared)
+             metadata = tree_cache.register_legolink_block(
+                 cache_key=group_key,
+                 block_id=group_key,
+-- 
+2.51.0.windows.2
+

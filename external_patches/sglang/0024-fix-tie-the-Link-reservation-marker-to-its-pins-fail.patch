@@ -1,0 +1,135 @@
+From 5877c5f21ae259c5d7ed8e1fd4d143a8f78424c6 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Tue, 15 Sep 2026 03:04:52 +0800
+Subject: [PATCH 24/27] fix: tie the Link reservation marker to its pins; fail
+ closed on retraction
+
+_scheduler_reserved_cache_keys outlived the scheduler pins it names:
+_guard_legolink_release unpinned after run_link but left the marker, so
+a re-admission of the same request skipped pinning and its next release
+decremented pins it no longer held -- possibly another request's. The
+marker is now dropped in the same step that releases the pins.
+
+A retracted request that entered through a Link was re-queued with its
+LinkPlan. Its re-prefill (prompt + generated tokens) cannot match the
+linked layout; in LegoLink-only mode run_link raised and the scheduler
+process exited. Such requests now release any held reservation and are
+aborted through the tokenizer instead of being re-queued. Native
+requests are retracted and re-queued exactly as before.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/managers/scheduler.py | 27 ++++++++++++++++--
+ python/sglang/srt/pic_runtime.py        | 37 +++++++++++++++++++++++++
+ 2 files changed, 62 insertions(+), 2 deletions(-)
+
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 1349e0e..e50a936 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2782,6 +2782,29 @@ class Scheduler(
+                 new_lora_set
+             )
+ 
++    def _pic_filter_retracted_reqs(self, retracted_reqs: List["Req"]) -> List["Req"]:
++        """Fail closed on retracted LegoLink requests; return the rest to re-queue.
++
++        See PICRequestTokenRegistry.retracted_link_abort_reason. Native requests
++        come back unchanged and are re-queued exactly as before. The aborted
++        request's KV was already released by retraction; the abort reaches the
++        client the same way retract_decode reports a request it cannot keep.
++        """
++        requeue: List["Req"] = []
++        for req in retracted_reqs:
++            reason = self.pic_token_registry.retracted_link_abort_reason(req)
++            if reason is None:
++                requeue.append(req)
++                continue
++            req.to_finish = FINISH_ABORT(
++                reason, status_code=HTTPStatus.INTERNAL_SERVER_ERROR
++            )
++            self.ipc_channels.send_to_tokenizer.send_output(
++                AbortReq(finished_reason=req.to_finish.to_json(), rid=req.rid),
++                req,
++            )
++        return requeue
++
+     def update_running_batch(self, batch: ScheduleBatch) -> Optional[ScheduleBatch]:
+         """Update the current running decoding batch."""
+         initial_bs = batch.batch_size()
+@@ -2853,7 +2876,7 @@ class Scheduler(
+                 )
+             logger.warning(msg_prefix + msg_details)
+ 
+-            for req in retracted_reqs:
++            for req in self._pic_filter_retracted_reqs(retracted_reqs):
+                 self._add_request_to_queue(req, is_retracted=True)
+         else:
+             self.new_token_ratio_tracker.decay_step()
+@@ -3632,7 +3655,7 @@ class Scheduler(
+             self.running_batch.filter_batch(v1_spec_info_filtered=True)
+             if len(self.running_batch.reqs) != 0:
+                 retracted_reqs = self.running_batch.retract_all(self.server_args)
+-                for req in retracted_reqs:
++                for req in self._pic_filter_retracted_reqs(retracted_reqs):
+                     self._add_request_to_queue(req)
+ 
+             self.running_batch.batch_is_full = False
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 6b89aae..abdc6c7 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -1379,6 +1379,12 @@ def _guard_legolink_release(method):
+                         tree_cache.unpin_legolink_blocks(cache_keys)
+                     elif cache_keys and hasattr(tree_cache, "unref_legolink_blocks"):
+                         tree_cache.unref_legolink_blocks(cache_keys, unpin=True)
++                if reserved_cache_keys and isinstance(link_plan, dict):
++                    # The pins just released are the ones the marker names.
++                    # Drop it in the same step: a later admission of this
++                    # request must pin again, and must not release pins it no
++                    # longer holds -- possibly another request's.
++                    link_plan.pop("_scheduler_reserved_cache_keys", None)
+ 
+     return wrapped
+ 
+@@ -2413,6 +2419,37 @@ class PICRequestTokenRegistry:
+                 [str(cache_key) for cache_key in reserved]
+             )
+ 
++    def retracted_link_abort_reason(self, req: Any) -> Optional[str]:
++        """Decide a retracted request's fate; None means the native re-queue.
++
++        A request that entered through a Link decoded against linked KV. Its
++        re-prefill would be prompt + generated tokens, which cannot match the
++        linked layout, and a native full prefill would silently change the KV
++        it continues from. It fails closed instead. Any reservation it still
++        holds is released under the marker's ownership rule, so calling this
++        twice releases nothing twice.
++        """
++
++        sampling_params = getattr(req, "sampling_params", None)
++        link_plan = get_pic_link_plan(sampling_params)
++        if link_plan is None:
++            return None
++        self.release_link_reservation(sampling_params)
++        _emit_pic_trace(
++            "legolink_request_failed_closed",
++            phase="scheduler",
++            request_id=link_plan.get("request_id"),
++            task_id=link_plan.get("task_id"),
++            scheduler_rid=str(getattr(req, "rid", "")),
++            cache_keys=[str(key) for key in (link_plan.get("cache_keys") or [])],
++            reason="link_request_retracted",
++        )
++        return (
++            "LegoLink request was retracted under KV pressure; its linked KV "
++            "layout cannot be replayed, so it fails closed instead of being "
++            "re-queued."
++        )
++
+     def _release_pin(self, cache_key: str) -> None:
+         pinned = self._pinned_blocks.pop(cache_key, None)
+         if pinned is not None and self._tree_cache is not None:
+-- 
+2.51.0.windows.2
+

@@ -1,0 +1,229 @@
+From ddb305ab15cbcb162e4dac6b10512c6a8420d88c Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 15:45:53 +0800
+Subject: [PATCH 09/27] Warm a LegoLink-only server with the requests it
+ accepts
+
+SGLang's warmup is a plain generation request, which LegoLink-only mode rejects
+by design, so the launcher must pass --skip-server-warmup and the first real
+request pays the Triton JIT and the FlashInfer plan build. Measured on
+2026-09-02 against a warmed Original server: first Compile 2.564 s against
+~0.28 s once warm, first Link 7.101 s against ~2.0 s. Those 9.665 s were 48% of
+everything the optimized arm spent across six calls, and dropping the first
+call from both arms moved the ratio from 1.79x to 1.19x. Agent Quality sessions
+are short, so a one-time cost was being charged as a per-request one.
+
+The restriction is this runtime's own, so it compensates here rather than in
+each launcher: on the skipped-warmup branch, a LegoLink-only server sends
+itself one Compile and the Link that consumes it. Built from the same request
+contract the host sends, not by calling kernels directly -- a synthetic call
+can specialize differently from the request that follows it, warming nothing
+while reporting success.
+
+It waits for /model_info first, because the skipped branch never waited for the
+app to listen. Any failure is logged and swallowed: an unwarmed server is
+today's behaviour, and refusing to serve because an optimization did not apply
+would be worse than the problem. SGLANG_PIC_WARMUP=0 disables it.
+---
+ python/sglang/srt/entrypoints/http_server.py |  22 +++
+ python/sglang/srt/pic_runtime.py             | 151 +++++++++++++++++++
+ 2 files changed, 173 insertions(+)
+
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 3e7bfb4..dbbdbb1 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -2029,6 +2029,28 @@ def _wait_and_warmup(
+         if not execute_warmup_func(server_args):
+             return
+     else:
++        # A LegoLink-only deployment does not get here by choice: SGLang's
++        # warmup is a plain generation request, which it rejects, so the
++        # launcher must pass --skip-server-warmup. Left alone, the first real
++        # request pays the Triton JIT and the FlashInfer plan build -- 9.665 s
++        # of the 20.07 s an optimized six-call session spent on 2026-09-02.
++        # Warm it with the request shape it does accept.
++        from sglang.srt.pic_runtime import (
++            execute_legolink_warmup,
++            legolink_only_mode_enabled,
++            legolink_warmup_enabled,
++        )
++
++        if legolink_only_mode_enabled() and legolink_warmup_enabled():
++            headers = {}
++            if server_args.api_key:
++                headers["Authorization"] = f"Bearer {server_args.api_key}"
++            execute_legolink_warmup(
++                server_args.url(),
++                model=_global_state.tokenizer_manager.served_model_name,
++                headers=headers,
++                ssl_verify=server_args.ssl_verify(),
++            )
+         _global_state.tokenizer_manager.server_status = ServerStatus.Up
+ 
+     # The server is ready for requests
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index c424fa0..e5331ac 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -566,6 +566,157 @@ def legolink_only_mode_enabled() -> bool:
+     return _env_flag("SGLANG_PIC_LEGOLINK_ONLY", "1")
+ 
+ 
++_WARMUP_CACHE_KEY = "sglang-pic-warmup-block"
++_WARMUP_TEXT = " ".join(["warmup context block for kernel specialization"] * 8)
++
++
++def legolink_warmup_enabled() -> bool:
++    """Whether the strict deployment warms itself with a Compile and a Link.
++
++    SGLang's own warmup is a plain generation request, which LegoLink-only mode
++    rejects by design, so the launcher is forced to pass --skip-server-warmup
++    and the first real request pays the Triton JIT and the FlashInfer plan
++    build. Measured on 2026-09-02 against a warmed Original server: the first
++    Compile cost 2.564 s against ~0.28 s once warm, the first Link 7.101 s
++    against ~2.0 s, and those 9.665 s were 48% of everything the optimized arm
++    spent across six calls. That is a one-time cost being charged to every
++    short session, and every Agent Quality session is short.
++
++    The restriction is the patched runtime's own, so the compensation belongs
++    here rather than in each launcher that starts the server.
++    """
++
++    return _env_flag("SGLANG_PIC_WARMUP", "1")
++
++
++def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]]:
++    """One Compile and the Link that consumes it, shaped like the real ones.
++
++    Deliberately built from the same request contract the host sends rather
++    than by calling kernels directly: a synthetic kernel call can JIT a
++    different specialization than the one a real request needs, which would
++    warm nothing and hide that it warmed nothing.
++    """
++
++    metadata = {
++        "prefill_unit_id": _WARMUP_CACHE_KEY,
++        "cache_key": _WARMUP_CACHE_KEY,
++        "source_sub_context_id": _WARMUP_CACHE_KEY,
++        "context_field": "warmup",
++        "functional_role": "warmup",
++        "attention_policy": "block_isolated_no_pairwise_attention",
++        "compile_attention_policy": "isolated_causal",
++        "link_attention_policy": "legolink_sparse_causal",
++        "cache_scope": "sub_context_block",
++        "kv_reuse_granularity": "sub_context",
++        "task_id": "sglang-pic-warmup",
++    }
++    compile_request = {
++        "model": model,
++        "messages": [{"role": "user", "content": _WARMUP_TEXT}],
++        "temperature": 0,
++        "max_tokens": 1,
++        "extra_key": _WARMUP_CACHE_KEY,
++        "custom_labels": {
++            "prefill_unit_id": _WARMUP_CACHE_KEY,
++            "cache_key": _WARMUP_CACHE_KEY,
++            "context_field": "warmup",
++        },
++        "sub_context": metadata,
++    }
++    link_request = {
++        "model": model,
++        "messages": [{"role": "user", "content": "warmup query"}],
++        "temperature": 0,
++        "max_tokens": 1,
++        "pic_link": {
++            "request_id": "sglang-pic-warmup",
++            "task_id": "sglang-pic-warmup",
++            "block_ids": [_WARMUP_CACHE_KEY],
++            "cache_keys": [_WARMUP_CACHE_KEY],
++            "recompute_initial_tokens": 8,
++            "legolink_k": 8,
++            "position_policy": "block_local_compile_global_link",
++            "compile_attention_policy": "isolated_causal",
++            "link_attention_policy": "legolink_sparse_causal",
++            "decode_attention_policy": "full_over_linked_kv",
++            "variant": "sglang_pic_warmup",
++        },
++    }
++    return compile_request, link_request
++
++
++def execute_legolink_warmup(
++    url: str,
++    *,
++    model: str,
++    headers: Optional[dict[str, str]] = None,
++    ssl_verify: Any = True,
++    timeout_s: float = 600.0,
++) -> bool:
++    """Pay the JIT before the first real request. Never fail startup for it.
++
++    A warmup that cannot run leaves the server exactly as it was, which is
++    today's behaviour, so it is logged and swallowed. Refusing to serve because
++    an optimization did not apply would be a worse failure than the one being
++    fixed.
++    """
++
++    import requests
++
++    compile_request, link_request = legolink_warmup_payloads(model)
++    base = url.rstrip("/")
++    endpoint = base + "/v1/chat/completions"
++
++    # The skipped-warmup path does not wait for the app to start listening --
++    # the native path only waits because its own warmup poll does. Same poll,
++    # same 120 s budget.
++    for _ in range(120):
++        try:
++            probe = requests.get(
++                base + "/model_info", timeout=5, headers=headers or {}, verify=ssl_verify
++            )
++            if probe.status_code == 200:
++                break
++        except Exception:  # noqa: BLE001 - not listening yet
++            pass
++        time.sleep(1)
++    else:
++        logger.warning("LegoLink warmup skipped: server did not become reachable")
++        return False
++
++    started = time.perf_counter()
++    for name, payload in (("compile", compile_request), ("link", link_request)):
++        try:
++            response = requests.post(
++                endpoint,
++                json=payload,
++                headers=headers or {},
++                timeout=timeout_s,
++                verify=ssl_verify,
++            )
++        except Exception as error:  # noqa: BLE001 - startup must survive anything
++            logger.warning("LegoLink %s warmup could not be sent: %s", name, error)
++            return False
++        if response.status_code != 200:
++            logger.warning(
++                "LegoLink %s warmup returned %s: %s",
++                name,
++                response.status_code,
++                response.text[:400],
++            )
++            return False
++    elapsed = time.perf_counter() - started
++    logger.info("LegoLink warmup completed in %.2f s", elapsed)
++    _emit_pic_trace(
++        "legolink_warmup_complete",
++        phase="warmup",
++        duration_s=elapsed,
++        cache_key=_WARMUP_CACHE_KEY,
++    )
++    return True
++
++
+ def _record_function(name: str):
+     return torch.profiler.record_function(name)
+ 
+-- 
+2.51.0.windows.2
+

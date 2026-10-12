@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOCRequestExecutionPlan",
+  "description": "Logical NOC plan. Physical KV slots, RoPE deltas and imp_indices are forbidden at this layer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest",
+    "selected_order",
+    "reuse_cached",
+    "compile_on_miss",
+    "keep_mutable",
+    "excluded",
+    "expected_cache_keys",
+    "baseline_selected_text",
+    "text_separator",
+    "decisions"
+  ],
+  "properties": {
+    "manifest": {
+      "type": "object"
+    },
+    "selected_order": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reuse_cached": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "compile_on_miss": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "keep_mutable": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_cache_keys": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "baseline_selected_text": {
+      "type": "string"
+    },
+    "text_separator": {
+      "type": "string"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "block_planning": {
+      "type": "array",
+      "description": "One record per selected block. Gate 1 (reuse eligibility), Gate 2 (layout feasibility) and the effective decision are separate fields; semantic candidacy, host cache availability and state eligibility are never one boolean.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "semantic_candidate": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cache_available": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "host catalog holds a non-stale entry; not runtime residency"
+          },
+          "cache_availability": {
+            "enum": [
+              "",
+              "host_catalog_entry",
+              "no_cached_state",
+              "stale_cached_state"
+            ]
+          },
+          "reuse_eligibility": {
+            "enum": [
+              "",
+              "exact_safe",
+              "reconstruct_required",
+              "experimental_foreign",
+              "no_reuse_candidate"
+            ]
+          },
+          "eligibility_reason": {
+            "enum": [
+              "",
+              "exact_safe_state",
+              "canonical_standalone_compile_on_miss",
+              "not_a_semantic_candidate",
+              "cached_state_identity_mismatch",
+              "legacy_identity_unverified",
+              "state_origin_unknown",
+              "contextual_state_not_proven",
+              "experimental_foreign_disabled",
+              "experimental_foreign_enabled"
+            ]
+          },
+          "state_origin": {
+            "type": "string"
+          },
+          "identity_basis": {
+            "enum": [
+              "",
+              "token_ids",
+              "text",
+              "legacy_provenance"
+            ]
+          },
+          "provisional_decision": {
+            "type": "string",
+            "description": "compile policy action before Gate 1"
+          },
+          "eligibility_adjusted": {
+            "type": "boolean"
+          },
+          "policy_action": {
+            "type": "string",
+            "description": "action that entered layout feasibility (after Gate 1)"
+          },
+          "feasibility_adjustment": {
+            "type": "string"
+          },
+          "feasibility_reason": {
+            "enum": [
+              "none",
+              "layout_forced_compile",
+              "layout_forced_native"
+            ]
+          },
+          "effective_action": {
+            "type": "string"
+          },
+          "effective_decision": {
+            "enum": [
+              "REUSE_CACHED",
+              "COMPILE_ON_MISS",
+              "KEEP_MUTABLE",
+              "DROPPED"
+            ]
+          },
+          "experimental": {
+            "type": "boolean"
+          },
+          "preceding_context_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "imp_indices"
+              ]
+            },
+            {
+              "required": [
+                "kvlink"
+              ]
+            },
+            {
+              "required": [
+                "recompute_positions"
+              ]
+            },
+            {
+              "required": [
+                "block_ranges"
+              ]
+            },
+            {
+              "required": [
+                "attention_ranges"
+              ]
+            },
+            {
+              "required": [
+                "kv_slots"
+              ]
+            },
+            {
+              "required": [
+                "global_positions"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "layout_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "layout_summary": {
+      "type": "object"
+    },
+    "reuse_eligibility_summary": {
+      "type": "object",
+      "required": [
+        "reuse_eligibility_policy_version",
+        "eligibility_counts",
+        "eligible_reuse_block_count",
+        "experimental_link_count",
+        "canonical"
+      ]
+    },
+    "profitability": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Gate 3. Observe-only: enforced is always false until a cost model is validated on formal data.",
+      "properties": {
+        "enforced": {
+          "const": false
+        },
+        "profitability_mode": {
+          "const": "observe_only"
+        }
+      }
+    }
+  }
+}

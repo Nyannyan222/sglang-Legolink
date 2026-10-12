@@ -1,6 +1,0 @@
-You are replaying a WildClaw semantic sub-context for cache measurement.
-Sub-context type: raw parameterized left
-
-Save the results into `/tmp_workspace/results`.
-
-Acknowledge in one short sentence.

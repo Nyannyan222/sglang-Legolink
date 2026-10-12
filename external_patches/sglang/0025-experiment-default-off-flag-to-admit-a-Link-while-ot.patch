@@ -1,0 +1,85 @@
+From caec21e8e655c6a12c78ef3759d79a259f9ffab5 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Tue, 15 Sep 2026 03:07:33 +0800
+Subject: [PATCH 25/27] experiment: default-off flag to admit a Link while
+ other requests decode
+
+The prefill scheduler admitted a Link only into an otherwise empty
+engine, so every Link waited for all decoding requests to finish; at
+concurrency 8 that queue was 97.8% of semantic TTFT. The audit of the
+guard found no invariant that needs an empty engine.
+
+SGLANG_PIC_ADMIT_LINK_WHILE_DECODING=1 drops only the
+running_batch-not-empty clause. The batch-of-one clauses stay
+unconditional: nothing joins a Link's batch, and a Link ends the scan
+once added, so each Link still runs alone in its own extend forward,
+between decode steps of other requests. Off by default.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/managers/scheduler.py | 11 ++++++++++-
+ python/sglang/srt/pic_runtime.py        | 20 ++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index e50a936..5a3e498 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -2577,13 +2577,22 @@ class Scheduler(
+                 )
+ 
+         # Get requests from the waiting queue to a new prefill batch
++        from sglang.srt.pic_runtime import link_admission_while_decoding_enabled
++
++        # Experimental, off by default: a Link need not wait for running_batch
++        # to drain. It still runs alone in its own extend forward -- the
++        # batch-of-one clauses are unchanged.
++        admit_link_while_decoding = link_admission_while_decoding_enabled()
+         for req in self.waiting_queue:
+             from sglang.srt.pic_runtime import PICRuntimeError, get_pic_link_plan
+ 
+             is_pic_link = get_pic_link_plan(req.sampling_params) is not None
+             if is_pic_link and (
+                 adder.can_run_list
+-                or not self.running_batch.is_empty()
++                or (
++                    not self.running_batch.is_empty()
++                    and not admit_link_while_decoding
++                )
+                 or self.chunked_req is not None
+             ):
+                 continue
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index abdc6c7..bd95248 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -1819,6 +1819,26 @@ def per_batch_overlap_enabled() -> bool:
+     return _env_flag("SGLANG_PIC_PER_BATCH_OVERLAP", "0")
+ 
+ 
++def link_admission_while_decoding_enabled() -> bool:
++    """Whether a Link may be admitted while other requests are decoding.
++
++    The scheduler used to admit a Link only into an otherwise empty engine, so
++    a Link waited for every decoding request to finish; at concurrency 8 that
++    queue was 97.8% of semantic TTFT. The audit of that guard found no
++    invariant needing an empty engine: KV slots, source pins and positions are
++    request-private, and forwards are sequential. What run_link does need --
++    a batch holding exactly one request -- stays enforced independently of
++    this flag. With it on, a Link runs alone in its own extend forward between
++    decode steps of other requests; it is not batched with them and does not
++    execute concurrently on the GPU.
++
++    Off by default: experimental until the serialized-vs-interleaved
++    equivalence gate has passed.
++    """
++
++    return _env_flag("SGLANG_PIC_ADMIT_LINK_WHILE_DECODING", "0")
++
++
+ def batch_needs_synchronous_boundary(batch: Any) -> bool:
+     """True when this batch carries Compile or Link work.
+ 
+-- 
+2.51.0.windows.2
+

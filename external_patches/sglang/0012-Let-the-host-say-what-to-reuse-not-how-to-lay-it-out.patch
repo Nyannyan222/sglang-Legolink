@@ -1,0 +1,378 @@
+From 2b005f2c82f21d670c6bb4e2f30886b438e6e840 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 3 Sep 2026 13:07:05 +0800
+Subject: [PATCH 12/27] Let the host say what to reuse, not how to lay it out
+
+pic_link arrived as an untyped dict, so a misspelt key was accepted in
+silence and three host builders had drifted into three different field
+sets. The plan-file benchmarks sent block_ranges, imp_indices and
+mutable_start_token; the live adapter sent framing policy and equivalence
+evidence; the Terminal-Bench agent sent neither. One of those paths
+produced the performance number and another produced the correctness
+number, so "it is one system" was an assumption.
+
+_prepare_link already overwrote every physical field a host sent, so this
+does not change what executes. It changes what is sayable. The contract
+splits into what the host decides -- which blocks, in what order, under
+what repair policy, and when it owns the chat template exactly which
+tokens -- and what this process derives from its own registry: block
+ranges, global offsets, the mutable boundary, sparse-repair positions.
+
+A host that sends a derived field is now refused rather than silently
+overridden, because a stale imp_indices in a saved plan file read like it
+was still steering the run. SGLANG_PIC_ALLOW_LEGACY_LINK_FIELDS=1 discards
+them instead, for replaying a plan that cannot be regenerated; the
+resolved plan is identical either way, which is the point.
+
+Unknown fields raise. The five that reached the server and were read by
+nothing -- selected_order, expected_cache_keys, framing_policy,
+separator_token_ids, equivalence_validation -- are host evidence and
+belong beside the request, not in it. The runtime verifies the token hash
+framing produced rather than the policy that produced it, which is the
+stronger check.
+
+ResolvedLinkPlan names what was previously only a mutated dict, so an
+equivalence test has something to compare. The warmup payload loses four
+attention-policy strings it was carrying and nothing read.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 293 ++++++++++++++++++++++++++++---
+ 1 file changed, 268 insertions(+), 25 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 52b278c..a1091a2 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -457,6 +457,244 @@ class PICRuntimeError(RuntimeError):
+     pass
+ 
+ 
++# ---------------------------------------------------------------------------
++# The pic_link request contract.
++#
++# `pic_link` reaches the server as an untyped dict, so until this existed a
++# misspelt key was accepted in silence and three host builders had drifted into
++# three different field sets. The split below is the contract: the host
++# describes which semantic blocks to reuse and under what repair policy, and
++# this process derives every physical consequence of that choice.
++#
++# The division is not stylistic. `_prepare_link` already overwrote every
++# physical field a host sent, so a host that computed them was writing into a
++# value nothing would read -- which is worse than an error, because a stale
++# `imp_indices` in a saved plan file looked like it was still steering the run.
++# ---------------------------------------------------------------------------
++
++#: Identity and telemetry labels. Never affect what is computed.
++PIC_LINK_IDENTITY_FIELDS = frozenset(
++    {
++        "request_id",
++        "task_id",
++        "variant",
++        "profiling_warmup",
++        "concurrency",
++    }
++)
++
++#: The reuse intent itself: which compiled blocks, in which order.
++PIC_LINK_SELECTION_FIELDS = frozenset(
++    {
++        "cache_keys",
++        "block_ids",
++    }
++)
++
++#: Which compiled blocks this request is allowed to bind to. These qualify the
++#: RadixCache lookup key, so a Link only matches a Compile that declared the
++#: same values -- see LegoLinkBlockKey.
++PIC_LINK_COMPATIBILITY_FIELDS = frozenset(
++    {
++        "adapter_id",
++        "segmentation_policy_version",
++        "legolink_policy_version",
++    }
++)
++
++#: Sparse-repair policy. The host chooses how much of each block to recompute;
++#: this process turns that choice into positions.
++PIC_LINK_REPAIR_POLICY_FIELDS = frozenset(
++    {
++        "recompute_mode",
++        "recompute_initial_tokens",
++        "recompute_first_block",
++        "recompute_first_block_tokens",
++        "recompute_tokens_per_block",
++    }
++)
++
++#: The exact token sequence, when the host owns tokenization.
++#:
++#: These name physical tokens but are not a physical *plan*: they are the host
++#: asserting "this is what the chat template produced", and every one of them is
++#: checked here against the tokens actually held in the registry before it is
++#: used. An override that disagrees raises. Position, offset and slot decisions
++#: remain this process's alone.
++PIC_LINK_TOKEN_LAYOUT_FIELDS = frozenset(
++    {
++        "physical_token_layout_version",
++        "physical_input_ids",
++        "physical_token_count",
++        "physical_token_ids_sha256",
++        "physical_prefix_token_count",
++        "physical_block_segments",
++        "expected_complete_token_count",
++        "expected_complete_token_ids_sha256",
++    }
++)
++
++#: Protected diagnostic switches, read only by the row-batching investigation.
++PIC_LINK_DIAGNOSTIC_FIELDS = frozenset(
++    {
++        "diagnostic_flashinfer_reuse_paged_wrapper_across_plans",
++        "diagnostic_flashinfer_skip_exact_paged_metadata_cache",
++        "diagnostic_sparse_repair_record_function",
++        "diagnostic_sparse_repair_row_batching",
++        "diagnostic_sparse_repair_rowwise_ffn",
++        "diagnostic_sparse_repair_rowwise_output_projection",
++    }
++)
++
++#: Accepted but superseded. recompute_initial_tokens says the same thing.
++PIC_LINK_DEPRECATED_ALIASES = frozenset({"legolink_k"})
++
++#: Everything a host may send.
++PIC_LINK_REQUEST_FIELDS = (
++    PIC_LINK_IDENTITY_FIELDS
++    | PIC_LINK_SELECTION_FIELDS
++    | PIC_LINK_COMPATIBILITY_FIELDS
++    | PIC_LINK_REPAIR_POLICY_FIELDS
++    | PIC_LINK_TOKEN_LAYOUT_FIELDS
++    | PIC_LINK_DIAGNOSTIC_FIELDS
++    | PIC_LINK_DEPRECATED_ALIASES
++)
++
++#: Derived here, from the registry. A host that sends one of these is describing
++#: a layout it cannot know -- block token counts live in this process -- so the
++#: value is refused rather than silently replaced.
++PIC_LINK_RUNTIME_OWNED_FIELDS = frozenset(
++    {
++        "attention_ranges",
++        "block_ranges",
++        "imp_indices",
++        "kvlink",
++        "mutable_start_token",
++        "mutable_token_count",
++        "recompute_positions",
++        "token_layout_source",
++        "total_token_count",
++    }
++)
++
++#: Written by the scheduler into the same dict after it owns the request.
++PIC_LINK_INTERNAL_FIELDS = frozenset({"_scheduler_reserved_cache_keys"})
++
++
++def legacy_link_fields_allowed() -> bool:
++    """Whether a host-sent physical field downgrades to a warning.
++
++    Plan files written before the contract existed carry block_ranges and
++    imp_indices. Set SGLANG_PIC_ALLOW_LEGACY_LINK_FIELDS=1 to replay one
++    without regenerating it; the values are still discarded.
++    """
++
++    return _env_flag("SGLANG_PIC_ALLOW_LEGACY_LINK_FIELDS", "0")
++
++
++def validate_pic_link_request(link_plan: dict[str, Any]) -> None:
++    """Reject anything the host is not entitled to send.
++
++    Called once, at request arrival, before this process writes its own fields
++    into the same dict.
++    """
++
++    if not isinstance(link_plan, dict):
++        raise PICRuntimeError("pic_link must be an object.")
++
++    physical = sorted(set(link_plan) & PIC_LINK_RUNTIME_OWNED_FIELDS)
++    if physical:
++        if not legacy_link_fields_allowed():
++            raise PICRuntimeError(
++                "pic_link carries fields the runtime derives and the host "
++                f"cannot know: {', '.join(physical)}. Send the semantic "
++                "selection only; set SGLANG_PIC_ALLOW_LEGACY_LINK_FIELDS=1 to "
++                "replay a pre-contract plan file."
++            )
++        for field_name in physical:
++            link_plan.pop(field_name, None)
++        _emit_pic_trace(
++            "pic_link_legacy_physical_fields_discarded",
++            phase="link",
++            request_id=link_plan.get("request_id"),
++            task_id=link_plan.get("task_id"),
++            fields=physical,
++        )
++
++    unknown = sorted(
++        set(link_plan)
++        - PIC_LINK_REQUEST_FIELDS
++        - PIC_LINK_RUNTIME_OWNED_FIELDS
++        - PIC_LINK_INTERNAL_FIELDS
++    )
++    if unknown:
++        raise PICRuntimeError(
++            f"pic_link has unknown fields: {', '.join(unknown)}. "
++            "Host correctness evidence and repair-window rationale belong in "
++            "the host audit record, not in the runtime request."
++        )
++
++
++@dataclass(frozen=True)
++class ResolvedLinkPlan:
++    """The physical plan, derived here and owned here.
++
++    Named so the equivalence tests have something to compare. Two requests that
++    express the same reuse intent through different host builders must resolve
++    to an identical value of this type.
++    """
++
++    cache_keys: tuple[str, ...]
++    block_ranges: tuple[tuple[tuple[str, Any], ...], ...]
++    mutable_start_token: int
++    mutable_token_count: int
++    physical_prefix_token_count: int
++    total_token_count: int
++    recompute_positions: tuple[int, ...]
++    recompute_tokens_per_block: tuple[int, ...]
++    recompute_first_block: bool
++    recompute_initial_tokens: int
++    token_layout_source: str
++    linked_token_ids: tuple[int, ...]
++
++    @staticmethod
++    def freeze_ranges(
++        ranges: list[dict[str, Any]]
++    ) -> tuple[tuple[tuple[str, Any], ...], ...]:
++        """Hashable block ranges, so two resolutions compare by value."""
++
++        return tuple(tuple(sorted(item.items())) for item in ranges)
++
++    @property
++    def block_range_dicts(self) -> list[dict[str, Any]]:
++        return [dict(item) for item in self.block_ranges]
++
++    def apply_to(self, link_plan: dict[str, Any]) -> None:
++        """Publish the resolved plan under the keys the rest of the runtime reads.
++
++        imp_indices and kvlink are the paper-side and EPIC-demo-side names for
++        the same positions; both are written so neither vocabulary drifts from
++        the layout SGLang actually tokenized.
++        """
++
++        block_ranges = self.block_range_dicts
++        recompute_positions = list(self.recompute_positions)
++        link_plan["block_ranges"] = block_ranges
++        link_plan["attention_ranges"] = block_ranges
++        link_plan["mutable_start_token"] = self.mutable_start_token
++        link_plan["mutable_token_count"] = self.mutable_token_count
++        link_plan["physical_prefix_token_count"] = self.physical_prefix_token_count
++        link_plan["total_token_count"] = self.total_token_count
++        link_plan["kvlink"] = recompute_positions
++        link_plan["legolink_k"] = self.recompute_initial_tokens
++        link_plan["recompute_first_block"] = self.recompute_first_block
++        link_plan["recompute_first_block_tokens"] = self.recompute_tokens_per_block[0]
++        link_plan["recompute_tokens_per_block"] = list(self.recompute_tokens_per_block)
++        link_plan["imp_indices"] = recompute_positions
++        link_plan["recompute_positions"] = recompute_positions
++        link_plan["token_layout_source"] = self.token_layout_source
++
++
+ def _validate_tp_rank_manifests(manifests: list[dict[str, Any]]) -> None:
+     if not manifests:
+         raise PICRuntimeError("PIC TP validation received no rank manifests.")
+@@ -668,11 +906,6 @@ def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]
+             "block_ids": [_WARMUP_CACHE_KEY],
+             "cache_keys": [_WARMUP_CACHE_KEY],
+             "recompute_initial_tokens": legolink_k,
+-            "legolink_k": legolink_k,
+-            "position_policy": "block_local_compile_global_link",
+-            "compile_attention_policy": "isolated_causal",
+-            "link_attention_policy": "legolink_sparse_causal",
+-            "decode_attention_policy": "full_over_linked_kv",
+             "variant": "sglang_pic_warmup",
+         },
+     }
+@@ -1393,6 +1626,13 @@ class PICRequestTokenRegistry:
+         self._pinned_blocks: OrderedDict[str, tuple[Any, Any]] = OrderedDict()
+         self._tree_cache: Any = None
+         self._legolink_compatibility: dict[str, Any] = {}
++        # The last plan this registry resolved. Kept so an equivalence test can
++        # compare two request paths without reaching into a mutated dict.
++        self._last_resolved_link_plan: Optional[ResolvedLinkPlan] = None
++
++    @property
++    def last_resolved_link_plan(self) -> Optional["ResolvedLinkPlan"]:
++        return self._last_resolved_link_plan
+ 
+     def prepare_request(self, input_ids: list[int], sampling_params: Any) -> list[int]:
+         if legolink_only_mode_enabled() and not _env_flag(
+@@ -1802,6 +2042,10 @@ class PICRequestTokenRegistry:
+         host_recorder: Optional[_HostTimingRecorder] = None,
+     ) -> list[int]:
+         host_recorder = host_recorder or _HostTimingRecorder("scheduler")
++        # Before anything is derived, and before this method writes its own
++        # fields into the same dict: after that point a host-sent physical
++        # field is indistinguishable from a resolved one.
++        validate_pic_link_request(link_plan)
+         ordered_keys_started_ns = time.perf_counter_ns() if host_recorder.enabled else 0
+         cache_keys = link_plan.get("cache_keys")
+         if not isinstance(cache_keys, list) or not cache_keys:
+@@ -2007,27 +2251,26 @@ class PICRequestTokenRegistry:
+                 )
+ 
+         with host_recorder.span("global_offset_position_map_construction"):
+-            link_plan["block_ranges"] = block_ranges
+-            link_plan["attention_ranges"] = block_ranges
+-            link_plan["mutable_start_token"] = mutable_start_token
+-            link_plan["mutable_token_count"] = len(mutable_suffix_input_ids)
+-            link_plan["physical_prefix_token_count"] = len(prefix_input_ids)
+-            link_plan["total_token_count"] = len(full_input_ids)
+-            # Keep the external EPIC demo vocabulary (`kvlink`) and the paper-style
+-            # sparse recompute vocabulary (`imp_indices`) locked to the exact
+-            # runtime-tokenized layout used by SGLang.
+-            link_plan["kvlink"] = recompute_positions
+-            link_plan["legolink_k"] = recompute_initial_tokens
+-            link_plan["recompute_first_block"] = recompute_first_block
+-            link_plan["recompute_first_block_tokens"] = recompute_tokens_per_block[0]
+-            link_plan["recompute_tokens_per_block"] = recompute_tokens_per_block
+-            link_plan["imp_indices"] = recompute_positions
+-            link_plan["recompute_positions"] = recompute_positions
+-            link_plan["token_layout_source"] = (
+-                "single_chat_template_physical_override"
+-                if normalized_layout
+-                else "sglang_tokenizer_runtime"
++            resolved = ResolvedLinkPlan(
++                cache_keys=tuple(cache_keys),
++                block_ranges=ResolvedLinkPlan.freeze_ranges(block_ranges),
++                mutable_start_token=mutable_start_token,
++                mutable_token_count=len(mutable_suffix_input_ids),
++                physical_prefix_token_count=len(prefix_input_ids),
++                total_token_count=len(full_input_ids),
++                recompute_positions=tuple(recompute_positions),
++                recompute_tokens_per_block=tuple(recompute_tokens_per_block),
++                recompute_first_block=recompute_first_block,
++                recompute_initial_tokens=recompute_initial_tokens,
++                token_layout_source=(
++                    "single_chat_template_physical_override"
++                    if normalized_layout
++                    else "sglang_tokenizer_runtime"
++                ),
++                linked_token_ids=tuple(full_input_ids),
+             )
++            self._last_resolved_link_plan = resolved
++            resolved.apply_to(link_plan)
+         _emit_pic_trace(
+             "scheduler_link_prepared",
+             phase="link",
+-- 
+2.51.0.windows.2
+

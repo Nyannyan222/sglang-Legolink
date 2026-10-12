@@ -1,0 +1,140 @@
+From 9efddb35315d2f901368868303e142eeb36c41c7 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 9 Sep 2026 19:22:13 +0800
+Subject: [PATCH 16/27] DEBUG: capture post-repair cached K and V for selected
+ rows
+
+Diagnostic scaffolding, not production. Revert with the post-remap capture once
+the multi-block question is settled.
+
+The existing post-remap checkpoint answers whether linking put the right angles
+in the right slots. This one answers what the cache holds after sparse repair
+has run, which is where a multi-block partial-repair failure has to appear if it
+is a KV problem at all.
+
+Off unless SGLANG_PIC_DEBUG_POST_REPAIR_KV names a file; when off it returns
+before touching a tensor. Read-only, exceptions swallowed. Each row is labelled
+REPAIRED or STALE from the runtime's own recompute positions rather than
+inferred from the tensor, so the divergence being measured cannot decide how the
+row is labelled.
+---
+ python/sglang/srt/pic_runtime.py | 96 ++++++++++++++++++++++++++++++++
+ 1 file changed, 96 insertions(+)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 33ee804..efac71c 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -524,6 +524,89 @@ def _debug_capture_post_remap_k(pool, destination_slots, full_input_ids, link_pl
+         logger.warning("post-remap K capture skipped: %s", error)
+ 
+ 
++def _debug_capture_post_repair_kv(
++    pool, destination_slots, full_input_ids, link_plan, repaired_positions, context
++):
++    """DEBUG ONLY. Dump post-repair cached K and V for a few rows, then return.
++
++    Off unless SGLANG_PIC_DEBUG_POST_REPAIR_KV names an output file; when off it
++    returns before touching a tensor. Read-only: every tensor is detached,
++    copied to CPU, and never written back.
++
++    The post-remap checkpoint answers whether linking put the right angles in
++    the right slots. This one answers the next question -- what the cache
++    actually holds once sparse repair has run -- which is where a multi-block
++    partial-repair failure has to show up if it is a KV problem at all. Each row
++    is labelled REPAIRED or STALE from the runtime's own recompute positions
++    rather than inferred from the tensor, so a row cannot be mislabelled by the
++    very divergence being measured.
++    """
++
++    path = os.getenv("SGLANG_PIC_DEBUG_POST_REPAIR_KV", "").strip()
++    if not path:
++        return
++    try:
++        raw = os.getenv("SGLANG_PIC_DEBUG_POST_REPAIR_KV_POSITIONS", "").strip()
++        wanted = [int(value) for value in raw.split(",") if value.strip()]
++        layers = [
++            int(value)
++            for value in os.getenv(
++                "SGLANG_PIC_DEBUG_POST_REPAIR_KV_LAYERS", "0"
++            ).split(",")
++            if value.strip()
++        ]
++        repaired = set(int(value) for value in (repaired_positions or ()))
++        block_ranges = link_plan.get("block_ranges") or []
++        samples = []
++        for position in wanted:
++            if position < 0 or position >= len(destination_slots):
++                continue
++            slot = int(destination_slots[position].item())
++            owner = next(
++                (
++                    entry
++                    for entry in block_ranges
++                    if int(entry["start_token"]) <= position < int(entry["end_token"])
++                ),
++                None,
++            )
++            for layer_id in layers:
++                key = pool.get_key_buffer(layer_id)[slot].detach().to("cpu")
++                value = pool.get_value_buffer(layer_id)[slot].detach().to("cpu")
++                samples.append(
++                    {
++                        "layer": layer_id,
++                        "global_position": position,
++                        "local_position": (
++                            position - int(owner["start_token"]) if owner else None
++                        ),
++                        "cache_key": owner.get("cache_key") if owner else None,
++                        "block_start_token": (
++                            int(owner["start_token"]) if owner else None
++                        ),
++                        "status": "REPAIRED" if position in repaired else "STALE",
++                        "token_id": (
++                            int(full_input_ids[position])
++                            if position < len(full_input_ids)
++                            else None
++                        ),
++                        "destination_slot": slot,
++                        "dtype": str(key.dtype),
++                        "shape": list(key.shape),
++                        "k": key.float().tolist(),
++                        "v": value.float().tolist(),
++                    }
++                )
++        with open(path, "a", encoding="utf-8") as handle:
++            handle.write(
++                json.dumps(
++                    {"checkpoint": "post_repair_kv", **context, "samples": samples}
++                )
++                + "\n"
++            )
++    except Exception as error:  # never let a debug dump break a request
++        logger.warning("post-repair KV capture skipped: %s", error)
++
+ 
+ class PICRuntimeError(RuntimeError):
+     pass
+@@ -3104,6 +3187,19 @@ class PICRuntime:
+                     "or 'full_causal'."
+                 )
+         recompute_cuda_ms = _cuda_event_elapsed_ms(recompute_cuda_started)
++        _debug_capture_post_repair_kv(
++            forward_batch.token_to_kv_pool,
++            destination_slots,
++            full_input_ids,
++            link_plan,
++            imp_indices,
++            {
++                "request_id": link_plan.get("request_id"),
++                "task_id": link_plan.get("task_id"),
++                "total_token_count": total_token_count,
++                "repaired_token_count": len(imp_indices),
++            },
++        )
+         from sglang.srt.flashinfer_sparse_repair import (
+             finalize_sparse_repair_metadata,
+         )
+-- 
+2.51.0.windows.2
+

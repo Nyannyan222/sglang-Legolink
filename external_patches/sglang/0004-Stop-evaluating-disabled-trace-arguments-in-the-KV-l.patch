@@ -1,0 +1,200 @@
+From 303038751932badb72e439e01aa630ae970f0493 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 27 Aug 2026 18:34:15 +0800
+Subject: [PATCH 04/27] Stop evaluating disabled trace arguments in the KV-link
+ path
+
+_emit_pic_trace returns immediately when SGLANG_PIC_TRACE_PATH is unset, but
+Python evaluates its keyword arguments first. Eighteen call sites passed
+_trace_values(<tensor>), whose body is
+
+    values.detach().reshape(-1).cpu().tolist()
+
+and .cpu() on a CUDA tensor is a device-to-host copy that synchronises the
+stream. One site also built its argument with torch.cat, allocating a tensor per
+repair unit. Profiler-free ABBA runs are this project's formal latency evidence
+and they run with tracing disabled, so that synchronisation and allocation sat
+inside the measured path unconditionally.
+
+_trace_values now returns a _LazyTraceValues holding the source, and
+_lazy_trace defers an arbitrary expensive field; _emit_pic_trace materializes
+them recursively immediately after the enabled check, so a written record holds
+exactly what it held before. A callable source also defers the work that
+produces the values, which is what removes the torch.cat and the
+_contiguous_ranges walk over every repair position.
+
+Measured on RTX 5070 with Qwen2.5-3B, feal-linear-cryptanalysis:
+
+- one CUDA _trace_values costs 44 us at n=128 and 161 us at n=3654, the floor
+  being the sync itself;
+- each link request carried 11 such fields over 12,906 elements, about 0.9 ms;
+- with tracing disabled the call is now 0.68 us with zero materializations.
+
+This is a measurement-hygiene and code-quality fix, not a speedup: 0.9 ms
+against a 1.6 s request is roughly 0.06% and will not be visible end to end.
+What it removes is GPU synchronisation that disabled instrumentation had no
+business performing inside a measured path.
+
+Behaviour verified unchanged on hardware with tracing enabled: 29 event types
+before and after, zero field differences, and the deferred fields byte-identical.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 118 ++++++++++++++++++++++++-------
+ 1 file changed, 92 insertions(+), 26 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index e482806..0ad5efe 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -656,23 +656,81 @@ def _trace_link_failure(method):
+     return wrapped
+ 
+ 
+-def _trace_values(values: Any) -> dict[str, Any]:
+-    """Return a bounded trace representation of token or KV slot indices."""
+-    limit = max(int(os.getenv("SGLANG_PIC_TRACE_MAX_ITEMS", "32")), 1)
+-    if isinstance(values, torch.Tensor):
+-        items = values.detach().reshape(-1).cpu().tolist()
+-    else:
+-        items = list(values)
+-    items = [int(item) for item in items]
+-    if len(items) <= limit:
+-        return {"count": len(items), "values": items, "truncated": False}
+-    head_count = (limit + 1) // 2
+-    tail_count = limit // 2
+-    return {
+-        "count": len(items),
+-        "values": items[:head_count] + items[-tail_count:],
+-        "truncated": True,
+-    }
++class _LazyTraceValues:
++    """Defer index materialization until a trace record is actually written.
++
++    ``_emit_pic_trace`` returns immediately when tracing is disabled, but Python
++    evaluates its keyword arguments first. Several call sites pass CUDA tensors,
++    and ``.cpu()`` on one is a device-to-host copy that synchronises the stream.
++    Profiler-free benchmark runs disable tracing, so those synchronisations sat
++    inside the measured KV-link path for no observable benefit.
++
++    A callable source defers the work that produces the values as well, which
++    matters where a call site would otherwise allocate a concatenated tensor.
++    Materialization happens inside ``_emit_pic_trace`` immediately after the
++    enabled check, so a written record holds exactly what it held before.
++    """
++
++    __slots__ = ("_source",)
++
++    def __init__(self, source: Any) -> None:
++        self._source = source
++
++    def materialize(self) -> dict[str, Any]:
++        values = self._source() if callable(self._source) else self._source
++        limit = max(int(os.getenv("SGLANG_PIC_TRACE_MAX_ITEMS", "32")), 1)
++        if isinstance(values, torch.Tensor):
++            items = values.detach().reshape(-1).cpu().tolist()
++        else:
++            items = list(values)
++        items = [int(item) for item in items]
++        if len(items) <= limit:
++            return {"count": len(items), "values": items, "truncated": False}
++        head_count = (limit + 1) // 2
++        tail_count = limit // 2
++        return {
++            "count": len(items),
++            "values": items[:head_count] + items[-tail_count:],
++            "truncated": True,
++        }
++
++
++def _trace_values(values: Any) -> _LazyTraceValues:
++    """Return a bounded trace representation of token or KV slot indices.
++
++    The representation is produced only if the record is written; see
++    :class:`_LazyTraceValues`.
++    """
++
++    return _LazyTraceValues(values)
++
++
++class _DeferredTraceField:
++    """Defer an arbitrary trace field that is expensive to build."""
++
++    __slots__ = ("_factory",)
++
++    def __init__(self, factory: Any) -> None:
++        self._factory = factory
++
++    def materialize(self) -> Any:
++        return _materialize_trace_details(self._factory())
++
++
++def _lazy_trace(factory: Any) -> _DeferredTraceField:
++    return _DeferredTraceField(factory)
++
++
++def _materialize_trace_details(value: Any) -> Any:
++    """Resolve deferred trace values anywhere inside a record."""
++
++    if isinstance(value, (_LazyTraceValues, _DeferredTraceField)):
++        return value.materialize()
++    if isinstance(value, dict):
++        return {key: _materialize_trace_details(item) for key, item in value.items()}
++    if isinstance(value, (list, tuple)):
++        return [_materialize_trace_details(item) for item in value]
++    return value
+ 
+ 
+ def _emit_pic_trace(event: str, **details: Any) -> None:
+@@ -687,7 +745,7 @@ def _emit_pic_trace(event: str, **details: Any) -> None:
+         "event": event,
+         "pid": os.getpid(),
+         "rank": os.getenv("LOCAL_RANK", os.getenv("RANK", "0")),
+-        **details,
++        **_materialize_trace_details(details),
+     }
+     _append_jsonl(raw_path, record)
+ 
+@@ -2226,10 +2284,14 @@ class PICRuntime:
+             destination_slots=_trace_values(destination_slots),
+             kvlink=_trace_values(imp_indices),
+             imp_indices=_trace_values(imp_indices),
+-            recompute_ranges=[
+-                {"start_token": start, "end_token": end}
+-                for start, end in _contiguous_ranges(imp_indices)
+-            ],
++            # Deferred: _contiguous_ranges walks every repair position, and the
++            # result is only ever read from a written trace record.
++            recompute_ranges=_lazy_trace(
++                lambda: [
++                    {"start_token": start, "end_token": end}
++                    for start, end in _contiguous_ranges(imp_indices)
++                ]
++            ),
+             total_token_count=total_token_count,
+         )
+         prepare_s = _profile_elapsed(started)
+@@ -2789,12 +2851,16 @@ class PICRuntime:
+                     for row_start, row_end in unit_ranges
+                 ],
+                 global_positions=_trace_values(
+-                    position
+-                    for row_start, row_end in unit_ranges
+-                    for position in range(row_start, row_end)
++                    lambda: [
++                        position
++                        for row_start, row_end in unit_ranges
++                        for position in range(row_start, row_end)
++                    ]
+                 ),
++                # Deferred: this concatenation allocated a tensor on every
++                # repair unit even with tracing disabled.
+                 destination_slots=_trace_values(
+-                    torch.cat(
++                    lambda: torch.cat(
+                         [
+                             destination_slots[row_start:row_end]
+                             for row_start, row_end in unit_ranges
+-- 
+2.51.0.windows.2
+

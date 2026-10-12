@@ -1,0 +1,688 @@
+From 7e61b597166b7ec07863dd42e830e77f6d5fd6f8 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 1 Oct 2026 22:26:29 +0800
+Subject: [PATCH 28/28] security: contain malformed PIC requests and compile
+ races
+
+L-1: refuse a Link that asks for input-token logprobs at admission (run_link returns none, and the result processor asserts they exist).
+
+L-2: validate the type and range of every pic_link field before it reaches the registry, including the recompute_mode enum; an unhashable quality_profile_id no longer raises TypeError.
+
+L-3: track each Compile as an in-flight record (absent/compiling/resident). A conflicting same-key Compile is refused at admission, completion registers the tokens its own request was admitted with, and a Compile that cannot register (aborted, KV kept out of the radix tree, block missing) degrades to not-registered instead of raising from the batch-result loop.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ python/sglang/srt/managers/scheduler.py |  22 +-
+ python/sglang/srt/pic_runtime.py        | 514 +++++++++++++++++++++++-
+ 2 files changed, 522 insertions(+), 14 deletions(-)
+
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 140cc4c..8c404bc 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -1917,11 +1917,14 @@ class Scheduler(
+             get_pic_link_plan,
+             per_batch_overlap_enabled,
+             validate_pic_link_input_length,
++            validate_pic_link_logprob_request,
+         )
+ 
+         try:
+             req.origin_input_ids = self.pic_token_registry.prepare_request(
+-                list(req.origin_input_ids), req.sampling_params
++                list(req.origin_input_ids),
++                req.sampling_params,
++                owner=req,
+             )
+             req.origin_input_ids_unpadded = req.origin_input_ids
+ 
+@@ -2039,6 +2042,20 @@ class Scheduler(
+             self._add_request_to_queue(req)
+             return
+ 
++        # A Link cannot return input-token logprobs, and the result processor
++        # asserts rather than skips when they are missing. Refuse it here, as a
++        # request-scoped error, instead of in the event loop.
++        error_msg = validate_pic_link_logprob_request(
++            req.sampling_params,
++            return_logprob=bool(req.return_logprob),
++            logprob_start_len=req.logprob_start_len,
++            input_length=len(req.origin_input_ids),
++        )
++        if error_msg:
++            req.set_finish_with_abort(error_msg)
++            self._add_request_to_queue(req)
++            return
++
+         if recv_req.return_routed_experts:
+             error_msg = None
+             if recv_req.routed_experts_start_len < 0:
+@@ -3539,6 +3556,9 @@ class Scheduler(
+             # This only works for requests that have not started anything.
+             # We still need to send something back to TokenizerManager to clean up the state.
+             req = self.waiting_queue.pop(i)
++            # A queued Compile that is dropped here never reaches the result
++            # processor, which is where its in-flight record is normally closed.
++            self.pic_token_registry.discard_compile(req)
+             if self.enable_hicache_storage:
+                 # to release prefetch events associated with the request
+                 self.tree_cache.release_aborted_request(req.rid)
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index df87f2d..8cb5f2c 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -17,6 +17,7 @@ import logging
+ import os
+ import threading
+ import time
++import weakref
+ from collections import OrderedDict
+ from dataclasses import dataclass, field
+ from functools import wraps
+@@ -754,6 +755,172 @@ PIC_LINK_RUNTIME_OWNED_FIELDS = frozenset(
+ #: Written by the scheduler into the same dict after it owns the request.
+ PIC_LINK_INTERNAL_FIELDS = frozenset({"_scheduler_reserved_cache_keys"})
+ 
++#: Largest value any integer `pic_link` count may carry. Far above any real
++#: token count and far below the point where a Python int stops being a
++#: plain machine integer downstream (range bounds, tensor shapes, traces).
++PIC_LINK_MAX_INTEGER = 2**31 - 1
++
++#: The sparse-repair recompute modes `PICRuntime.run_link` implements.
++PIC_LINK_RECOMPUTE_MODES = frozenset({"batched", "tokenwise", "full_causal"})
++
++
++def _link_field_error(name: str, problem: str) -> PICRuntimeError:
++    return PICRuntimeError(f"pic_link.{name} {problem}.")
++
++
++def _link_int(
++    link_plan: dict[str, Any],
++    name: str,
++    *,
++    nullable: bool = False,
++    minimum: int = 0,
++    maximum: int = PIC_LINK_MAX_INTEGER,
++) -> Optional[int]:
++    """A present integer field, strictly: no bool, float, string or list."""
++
++    if name not in link_plan:
++        return None
++    value = link_plan[name]
++    if value is None:
++        if nullable:
++            return None
++        raise _link_field_error(name, "must not be null")
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise _link_field_error(name, "must be an integer")
++    if value < minimum or value > maximum:
++        raise _link_field_error(name, f"must be between {minimum} and {maximum}")
++    return value
++
++
++def _link_optional_str(link_plan: dict[str, Any], name: str) -> None:
++    value = link_plan.get(name)
++    if value is not None and not isinstance(value, str):
++        raise _link_field_error(name, "must be a string when present")
++
++
++def _link_optional_bool(link_plan: dict[str, Any], name: str) -> None:
++    value = link_plan.get(name)
++    if value is not None and not isinstance(value, bool):
++        raise _link_field_error(name, "must be a boolean when present")
++
++
++def _link_label(link_plan: dict[str, Any], name: str) -> None:
++    """Identity and telemetry labels: a string or an integer, never a container."""
++
++    value = link_plan.get(name)
++    if value is None or isinstance(value, str):
++        return
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise _link_field_error(name, "must be a string or an integer when present")
++
++
++def _link_string_list(
++    link_plan: dict[str, Any],
++    name: str,
++    *,
++    required: bool = False,
++    nullable: bool = True,
++    at_most: Optional[int] = None,
++) -> Optional[list[str]]:
++    if name not in link_plan:
++        if required:
++            raise _link_field_error(name, "must be non-empty")
++        return None
++    value = link_plan[name]
++    if value is None:
++        if required or not nullable:
++            raise _link_field_error(name, "must not be null")
++        return None
++    if not isinstance(value, list):
++        raise _link_field_error(name, "must be a list of strings")
++    if required and not value:
++        raise _link_field_error(name, "must be non-empty")
++    if any(not isinstance(item, str) for item in value):
++        raise _link_field_error(name, "must contain only strings")
++    if at_most is not None and len(value) > at_most:
++        raise _link_field_error(name, f"may hold at most {at_most} entries")
++    return value
++
++
++def validate_pic_link_field_types(link_plan: dict[str, Any]) -> None:
++    """Type- and range-check every value a host may send in `pic_link`.
++
++    `pic_link` is copied from the HTTP body into the scheduler unchanged, and
++    `_prepare_link` applies `int()`, `len()` and indexing to what it finds. A
++    value of the wrong shape therefore used to surface as a TypeError,
++    ValueError, OverflowError or KeyError -- none of which the scheduler turns
++    into a per-request abort -- so one malformed request ended the shared
++    process. Every failure here is a PICRuntimeError, which admission already
++    reports as a rejection of that one request.
++
++    Presence rules are the ones `_prepare_link` always had (an absent optional
++    field means its default); what changes is that a value which is present
++    must be what the field says it is. Governance (`execution_mode`,
++    `framing_spec`, `repair_decision`) is validated by `validate_execution_intent`;
++    token-layout fields are checked against the registry's tokens where they
++    are used; diagnostic switches keep their existing per-request gate.
++    """
++
++    cache_keys = _link_string_list(link_plan, "cache_keys", required=True) or []
++
++    for name in ("request_id", "task_id"):
++        _link_label(link_plan, name)
++    _link_optional_str(link_plan, "variant")
++    _link_optional_bool(link_plan, "profiling_warmup")
++    _link_int(link_plan, "concurrency", nullable=True)
++
++    _link_string_list(link_plan, "block_ids", at_most=len(cache_keys))
++
++    for name in (
++        "adapter_id",
++        "segmentation_policy_version",
++        "legolink_policy_version",
++        "execution_group_key",
++    ):
++        _link_optional_str(link_plan, name)
++    _link_optional_bool(link_plan, "promote_reconstructed_group")
++
++    if "recompute_mode" in link_plan:
++        mode = link_plan["recompute_mode"]
++        if not isinstance(mode, str):
++            raise _link_field_error("recompute_mode", "must be a string")
++        if mode.lower() not in PIC_LINK_RECOMPUTE_MODES:
++            raise _link_field_error(
++                "recompute_mode",
++                "must be one of " + ", ".join(sorted(PIC_LINK_RECOMPUTE_MODES)),
++            )
++
++    # `recompute_initial_tokens` and its alias are read with `int()` and
++    # compared; an explicit null is not "use the default", it is a TypeError.
++    _link_int(link_plan, "recompute_initial_tokens")
++    _link_int(link_plan, "legolink_k")
++    _link_optional_bool(link_plan, "recompute_first_block")
++    _link_int(link_plan, "recompute_first_block_tokens", nullable=True)
++
++    if "recompute_tokens_per_block" in link_plan:
++        windows = link_plan["recompute_tokens_per_block"]
++        if windows is not None:
++            if not isinstance(windows, list):
++                raise _link_field_error(
++                    "recompute_tokens_per_block", "must be a list of integers"
++                )
++            if len(windows) != len(cache_keys):
++                raise _link_field_error(
++                    "recompute_tokens_per_block",
++                    "must contain one value per cache key",
++                )
++            for window in windows:
++                if (
++                    isinstance(window, bool)
++                    or not isinstance(window, int)
++                    or window < 0
++                    or window > PIC_LINK_MAX_INTEGER
++                ):
++                    raise _link_field_error(
++                        "recompute_tokens_per_block",
++                        "must contain only non-negative integers within range",
++                    )
++
+ 
+ def group_promotion_enabled() -> bool:
+     """EXPERIMENTAL. Whether a reconstructed execution group may be promoted
+@@ -854,6 +1021,8 @@ def validate_pic_link_request(link_plan: dict[str, Any]) -> None:
+     if not isinstance(link_plan, dict):
+         raise PICRuntimeError("pic_link must be an object.")
+ 
++    # Shapes first: the governance check below reads cache_keys with len().
++    validate_pic_link_field_types(link_plan)
+     validate_runtime_execution_intent(link_plan)
+     physical = sorted(set(link_plan) & PIC_LINK_RUNTIME_OWNED_FIELDS)
+     if physical:
+@@ -938,6 +1107,11 @@ def validate_execution_intent(wire, profile=None, *, require_formal=False):
+         raise ValueError("repair/framing incompatibility")
+     if repair["policy"] not in ("quality_guarded", "fixed_unvalidated_debug"):
+         raise ValueError("unknown repair policy")
++    if repair["quality_profile_id"] is not None and not isinstance(
++        repair["quality_profile_id"], str
++    ):
++        # Used as a dict key below; a list or dict would raise TypeError.
++        raise ValueError("quality_profile_id must be a string or null")
+     if not all(isinstance(repair[x], str) and repair[x].strip()
+                for x in ("reason", "workload_class")):
+         raise ValueError("missing repair provenance")
+@@ -1943,6 +2117,49 @@ def validate_pic_link_input_length(
+     return None
+ 
+ 
++def validate_pic_link_logprob_request(
++    sampling_params: Any,
++    *,
++    return_logprob: bool,
++    logprob_start_len: int,
++    input_length: int,
++) -> Optional[str]:
++    """Reject a Link that asks for input-token logprobs, which it cannot return.
++
++    `PICRuntime.run_link` rebuilds its inner extend batches with
++    `return_logprob=False`, so the logits output it hands back carries no
++    `input_token_logprobs`. The scheduler's result processor nevertheless
++    counts `extend_input_len - extend_logprob_start_len` input logprobs for the
++    request and asserts the field is present. That assertion is raised from the
++    event loop, not from a request handler, and the scheduler process answers
++    any such exception by signalling its parent -- one request ended the whole
++    server. Serving the request without the logprobs would instead return a
++    result that silently lacks what the caller asked for, so it is refused here,
++    at admission, as a request-scoped error.
++
++    Input logprobs are wanted exactly when logprobs are on and the effective
++    start lies inside the prompt: `-1` means "from the end" and
++    `logprob_start_len == input_length` means "none", and neither reaches the
++    assertion. A Link request has a request-private radix namespace, so no
++    prefix is skipped and the absolute start equals the extend-relative one.
++    Requests that are not a Link are untouched.
++    """
++
++    if get_pic_link_plan(sampling_params) is None:
++        return None
++    if not return_logprob:
++        return None
++    if 0 <= logprob_start_len < input_length:
++        return (
++            "PIC link requests cannot return input-token logprobs "
++            f"(logprob_start_len={logprob_start_len} lies inside the "
++            f"{input_length}-token linked input): the linked prefill does not "
++            "compute them. Request output logprobs only (logprob_start_len=-1, "
++            "and no echo of the prompt)."
++        )
++    return None
++
++
+ def _contiguous_ranges(positions: list[int]) -> list[tuple[int, int]]:
+     """Convert sorted token positions to half-open contiguous ranges."""
+     if not positions:
+@@ -2017,8 +2234,57 @@ def _build_flashinfer_paged_execution_units(
+     return tuple(units)
+ 
+ 
++#: Lifecycle of one Compile cache key in the scheduler-side registry.
++COMPILE_STATE_ABSENT = "absent"
++COMPILE_STATE_COMPILING = "compiling"
++COMPILE_STATE_RESIDENT = "resident"
++
++
++@dataclass
++class _CompileRecord:
++    """One admitted Compile request: what *it* will finalize, fixed at admission.
++
++    `pin_finished_compile` runs after the request has produced its output and
++    must register exactly what that request computed. It used to re-read the
++    token tuple from `PICRequestTokenRegistry._blocks[cache_key]`, a map the
++    next same-key Compile overwrites at admission, so a second Compile
++    admitted while the first was still running changed what the first one
++    tried to pin.
++    """
++
++    cache_key: str
++    token_ids: tuple[int, ...]
++    storage_mode: str
++
++
++def _finish_reason_is_abort(reason: Any) -> bool:
++    to_json = getattr(reason, "to_json", None)
++    if not callable(to_json):
++        return False
++    try:
++        return to_json().get("type") == "abort"
++    except AttributeError:
++        return False
++
++
+ class PICRequestTokenRegistry:
+-    """Scheduler-side token registry used to assemble a linked request."""
++    """Scheduler-side token registry used to assemble a linked request.
++
++    A Compile cache key moves through three states, visible as
++    `compile_state()`:
++
++    * ``absent`` -- no tokens known for the key;
++    * ``compiling`` -- one or more admitted Compile requests have not finished.
++      Every one of them carries the same tokens and storage mode: a Compile that
++      disagrees is refused at admission instead of overwriting the others, and a
++      Compile that agrees is attached as its own record, so duplicated work
++      stays harmless and nothing is shared between requests but the key;
++    * ``resident`` -- no Compile in flight and the key's tokens are known.
++
++    A Compile that ends without registering (aborted, or its KV never entered
++    the radix tree) returns the key to the state it had before the first
++    in-flight Compile admitted it.
++    """
+ 
+     def __init__(self, max_blocks: Optional[int] = None):
+         self.max_blocks = max_blocks or int(os.getenv("SGLANG_PIC_MAX_BLOCKS", "256"))
+@@ -2030,12 +2296,150 @@ class PICRequestTokenRegistry:
+         # The last plan this registry resolved. Kept so an equivalence test can
+         # compare two request paths without reaching into a mutated dict.
+         self._last_resolved_link_plan: Optional[ResolvedLinkPlan] = None
++        # In-flight Compile requests, by the identity of the owning request.
++        self._compile_records: dict[int, _CompileRecord] = {}
++        self._inflight_owners: dict[str, list[int]] = {}
++        # What `_blocks` / `_storage_modes` held for a key before its first
++        # in-flight Compile, restored if every in-flight Compile fails.
++        self._precompile_state: dict[
++            str, tuple[Optional[tuple[int, ...]], Optional[str]]
++        ] = {}
+ 
+     @property
+     def last_resolved_link_plan(self) -> Optional["ResolvedLinkPlan"]:
+         return self._last_resolved_link_plan
+ 
+-    def prepare_request(self, input_ids: list[int], sampling_params: Any) -> list[int]:
++    def compile_state(self, cache_key: str) -> str:
++        if self._inflight_owners.get(cache_key):
++            return COMPILE_STATE_COMPILING
++        if cache_key in self._blocks:
++            return COMPILE_STATE_RESIDENT
++        return COMPILE_STATE_ABSENT
++
++    def _admit_compile(
++        self,
++        cache_key: str,
++        token_ids: tuple[int, ...],
++        storage_mode: str,
++        owner: Any,
++    ) -> None:
++        """Record one Compile as in flight, or refuse it, before any mutation."""
++
++        owners = self._inflight_owners.get(cache_key)
++        if owners:
++            first = self._compile_records[owners[0]]
++            if first.token_ids != token_ids or first.storage_mode != storage_mode:
++                raise PICRuntimeError(
++                    f"A Compile for cache_key {cache_key} that differs in tokens "
++                    "or storage mode is already in flight. A cache key names one "
++                    "block; wait for the first Compile to finish or use a "
++                    "different key."
++                )
++        owner_id = id(owner)
++        if owner_id in self._compile_records:
++            # The same request admitted twice replaces its own record.
++            self._drop_compile_record(owner_id, restore=False)
++        owners = self._inflight_owners.setdefault(cache_key, [])
++        if not owners:
++            self._precompile_state[cache_key] = (
++                self._blocks.get(cache_key),
++                self._storage_modes.get(cache_key),
++            )
++        owners.append(owner_id)
++        self._compile_records[owner_id] = _CompileRecord(
++            cache_key=cache_key, token_ids=token_ids, storage_mode=storage_mode
++        )
++        try:
++            finalizer = weakref.finalize(owner, self._owner_collected, owner_id)
++            finalizer.atexit = False
++        except TypeError:
++            pass  # not weak-referenceable: explicit discard/finish still cleans up
++
++    def _owner_collected(self, owner_id: int) -> None:
++        """A request vanished without finishing (for example, aborted in the queue)."""
++
++        self._drop_compile_record(owner_id, restore=True)
++
++    def _drop_compile_record(self, owner_id: int, *, restore: bool) -> Optional[_CompileRecord]:
++        record = self._compile_records.pop(owner_id, None)
++        if record is None:
++            return None
++        owners = self._inflight_owners.get(record.cache_key, [])
++        if owner_id in owners:
++            owners.remove(owner_id)
++        if not owners:
++            self._inflight_owners.pop(record.cache_key, None)
++            previous = self._precompile_state.pop(record.cache_key, None)
++            if restore and previous is not None:
++                self._restore_precompile_state(record, previous)
++        return record
++
++    def _complete_compile_record(self, owner_id: int) -> None:
++        """A Compile finished with a block: the key's state is committed.
++
++        Once any Compile of a key has completed, a later failure of an attached
++        sibling must not roll the key back to what it held before the first
++        one, so the saved state is discarded here even if siblings remain.
++        """
++
++        record = self._compile_records.get(owner_id)
++        if record is not None:
++            self._precompile_state.pop(record.cache_key, None)
++        self._drop_compile_record(owner_id, restore=False)
++
++    def _restore_precompile_state(
++        self,
++        record: _CompileRecord,
++        previous: tuple[Optional[tuple[int, ...]], Optional[str]],
++    ) -> None:
++        # Only undo our own write: if the key now holds other tokens, another
++        # path has taken it over and its entry is not ours to remove.
++        if self._blocks.get(record.cache_key) != record.token_ids:
++            return
++        tokens, mode = previous
++        if tokens is None:
++            self._blocks.pop(record.cache_key, None)
++        else:
++            self._blocks[record.cache_key] = tokens
++        if mode is None:
++            self._storage_modes.pop(record.cache_key, None)
++        else:
++            self._storage_modes[record.cache_key] = mode
++
++    def _find_compile_owner(self, req: Any) -> Optional[int]:
++        for candidate in (req, getattr(req, "sampling_params", None)):
++            if candidate is not None and id(candidate) in self._compile_records:
++                return id(candidate)
++        return None
++
++    def discard_compile(self, req: Any) -> None:
++        """Forget a Compile that will never reach `pin_finished_compile`."""
++
++        owner_id = self._find_compile_owner(req)
++        if owner_id is not None:
++            self._drop_compile_record(owner_id, restore=True)
++
++    @staticmethod
++    def _release_runtime_snapshot(model_worker: Any, cache_key: str) -> None:
++        model_runner = getattr(model_worker, "model_runner", None)
++        runtime = getattr(model_runner, "_pic_runtime", None)
++        release = getattr(runtime, "release_local_block", None)
++        if callable(release):
++            release(cache_key)
++
++    def prepare_request(
++        self,
++        input_ids: list[int],
++        sampling_params: Any,
++        owner: Any = None,
++    ) -> list[int]:
++        """Admit one request. `owner` identifies a Compile for its whole life.
++
++        The scheduler passes the request; a caller without one is identified
++        by its `sampling_params` object, which `pin_finished_compile` also
++        accepts.
++        """
++
+         if legolink_only_mode_enabled() and not _env_flag(
+             "SGLANG_PIC_RADIXCACHE_OWNS_BLOCKS", "1"
+         ):
+@@ -2106,6 +2510,14 @@ class PICRequestTokenRegistry:
+                 host_recorder.span("semantic_selection"),
+             ):
+                 storage_mode = get_pic_compile_storage_mode(sampling_params)
++                # Refuses a conflicting in-flight Compile before anything is
++                # overwritten, and fixes what this request will finalize.
++                self._admit_compile(
++                    cache_key,
++                    tuple(normalized_input_ids),
++                    storage_mode,
++                    owner if owner is not None else sampling_params,
++                )
+                 if storage_mode != "reference":
+                     self._release_pin(cache_key)
+                 self._blocks[cache_key] = tuple(normalized_input_ids)
+@@ -2168,15 +2580,44 @@ class PICRequestTokenRegistry:
+         req: Any,
+         tree_cache: Any,
+         model_worker: Any,
+-    ) -> None:
++    ) -> bool:
++        """Register the block one finished Compile request computed.
++
++        Runs from the batch-result loop after the request has already produced
++        its output, so an unmet post-condition caused by *the request* must not
++        raise: that would end the scheduler, and with it every other request,
++        for something that only costs this block its LegoLink name. The tokens
++        come from the record this request was admitted with, never from the
++        shared per-key map. Returns whether the block was pinned.
++
++        Conditions the request can cause degrade to "not registered" and are
++        traced: the Compile was aborted, its KV was kept out of the radix tree
++        (a client-set bootstrap_host equal to the upstream sentinel does that),
++        or the tree does not hold the whole block. Configuration invariants
++        (no ModelRunner runtime to rebind into) still raise.
++        """
++
+         cache_key = get_pic_compile_cache_key(req.sampling_params)
+-        if cache_key is None or self._storage_modes.get(cache_key) != "reference":
+-            return
+-        token_ids = self._blocks.get(cache_key)
+-        if token_ids is None:
+-            raise PICRuntimeError(
+-                f"PIC scheduler lost token metadata for block {cache_key}."
++        if cache_key is None:
++            return False
++        owner_id = self._find_compile_owner(req)
++        record = self._compile_records.get(owner_id) if owner_id is not None else None
++        if record is None or record.cache_key != cache_key:
++            _emit_pic_trace(
++                "compile_finish_without_admission",
++                phase="compile",
++                cache_key=cache_key,
+             )
++            return False
++        if record.storage_mode != "reference":
++            self._complete_compile_record(owner_id)
++            return False
++
++        skip_reason = self._compile_not_registrable_reason(req)
++        if skip_reason is not None:
++            self._abandon_finished_compile(owner_id, record, model_worker, skip_reason)
++            return False
++        token_ids = record.token_ids
+ 
+         from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
+         from sglang.srt.mem_cache.radix_cache import RadixKey
+@@ -2191,10 +2632,15 @@ class PICRequestTokenRegistry:
+                 )
+             )
+         if len(match_result.device_indices) != len(token_ids):
+-            raise PICRuntimeError(
+-                f"PIC could not pin the complete compiled block {cache_key}: "
+-                f"matched={len(match_result.device_indices)}, expected={len(token_ids)}"
++            self._abandon_finished_compile(
++                owner_id,
++                record,
++                model_worker,
++                "radix_tree_missing_block_tokens "
++                f"(matched={len(match_result.device_indices)}, "
++                f"expected={len(token_ids)})",
+             )
++            return False
+ 
+         self._release_pin(cache_key)
+         self._tree_cache = tree_cache
+@@ -2261,12 +2707,51 @@ class PICRequestTokenRegistry:
+                 # this key. The request has already produced its output and its
+                 # KV is in the radix tree; only the LegoLink name is refused, so
+                 # this costs the registration and nothing else.
+-                return
++                self._complete_compile_record(owner_id)
++                return False
++        self._complete_compile_record(owner_id)
+         logger.info(
+             "SGLang PIC scheduler pinned cache_key=%s tokens=%d",
+             cache_key,
+             len(token_ids),
+         )
++        return True
++
++    @staticmethod
++    def _compile_not_registrable_reason(req: Any) -> Optional[str]:
++        """Why this finished Compile has no block to register, if it has none."""
++
++        if _finish_reason_is_abort(
++            getattr(req, "finished_reason", None)
++        ) or _finish_reason_is_abort(getattr(req, "to_finish", None)):
++            return "compile_aborted"
++        if getattr(req, "skip_radix_cache_insert", False) is True:
++            return "radix_insert_suppressed"
++        return None
++
++    def _abandon_finished_compile(
++        self,
++        owner_id: int,
++        record: _CompileRecord,
++        model_worker: Any,
++        reason: str,
++    ) -> None:
++        """Finish a Compile that produced no registrable block, without raising."""
++
++        self._drop_compile_record(owner_id, restore=True)
++        if not self._inflight_owners.get(record.cache_key):
++            self._release_runtime_snapshot(model_worker, record.cache_key)
++        logger.warning(
++            "SGLang PIC did not register compiled block cache_key=%s: %s",
++            record.cache_key,
++            reason,
++        )
++        _emit_pic_trace(
++            "compile_not_registered",
++            phase="compile",
++            cache_key=record.cache_key,
++            reason=reason,
++        )
+ 
+     @staticmethod
+     def _register_compiled_block(tree_cache: Any, **kwargs: Any) -> bool:
+@@ -2534,6 +3019,9 @@ class PICRequestTokenRegistry:
+             self._release_pin(cache_key)
+         self._blocks.clear()
+         self._storage_modes.clear()
++        self._compile_records.clear()
++        self._inflight_owners.clear()
++        self._precompile_state.clear()
+         self._tree_cache = None
+         self._legolink_compatibility.clear()
+         model_runner = getattr(model_worker, "model_runner", None)
+-- 
+2.51.0.windows.2
+

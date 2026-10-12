@@ -1,0 +1,75 @@
+From 6970f07f6db687b159749c0892a783b42097b2c2 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 16 Sep 2026 15:09:59 +0800
+Subject: [PATCH 27/27] fix: name the missing source blocks when a Link
+ preflight fails
+
+The source preflight already knew exactly which cache keys were missing,
+stale or incompatible, and threw that away: `reserve_link_sources` joined
+them into an abort message and the lookup result was discarded. A host
+that planned reuse from its own metadata could not learn which of its
+blocks the runtime no longer held, so an ordinary capacity eviction ended
+the request instead of becoming a cache miss
+(results/cache_residency_correctness/failure_trace.md).
+
+The abort message now carries the lookup's own classification as JSON:
+
+  {"noc_residency_recovery": {"reason": ..., "missing_cache_keys": [...],
+   "stale_cache_keys": [...], "incompatible_cache_keys": [...]}}
+
+Detection, the fail-closed order (before destination KV allocation),
+pinning, eviction policy and admission are unchanged; this only stops
+destroying the answer on the way out. The host uses it to invalidate
+exactly those keys, recompile those blocks under the same semantic
+identity and cache key, and resend.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 29 ++++++++++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 9b69d02..df87f2d 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -2394,9 +2394,36 @@ class PICRequestTokenRegistry:
+                 ),
+                 reason="scheduler_source_preflight_failed",
+             )
++            # The lookup already knows exactly which keys are gone and why. A
++            # host that planned reuse from its own metadata cannot know that
++            # without being told, so the classification travels out with the
++            # abort instead of dying here as prose: the caller can invalidate
++            # precisely those keys, recompile them under the same identity and
++            # resend. Detection, fail-closed behaviour and eviction policy are
++            # unchanged -- this only stops throwing the answer away.
++            detail = {
++                "noc_residency_recovery": {
++                    "reason": "scheduler_source_preflight_failed",
++                    "missing_cache_keys": [
++                        str(item)
++                        for item in getattr(lookup_result, "missing_blocks", [])
++                    ],
++                    "stale_cache_keys": [
++                        str(item)
++                        for item in getattr(lookup_result, "stale_blocks", [])
++                    ],
++                    "incompatible_cache_keys": [
++                        str(item)
++                        for item in getattr(lookup_result, "incompatible_blocks", [])
++                    ],
++                }
++            }
+             raise PICRuntimeError(
+                 "LegoLink source preflight failed before destination KV "
+-                "allocation: " + ", ".join(str(item) for item in unavailable)
++                "allocation: "
++                + ", ".join(str(item) for item in unavailable)
++                + " | "
++                + json.dumps(detail, separators=(",", ":"))
+             )
+ 
+         handles = list(getattr(lookup_result, "matched_handles", []))
+-- 
+2.51.0.windows.2
+

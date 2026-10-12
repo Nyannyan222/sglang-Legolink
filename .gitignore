@@ -1,9 +1,24 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.tmp/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
 .env
-.env.local
-local_secrets/
-external/sglang/
-external/WildClawBench/
-benchmark_results/wildclaw_mixed_category_eval_runs/
-benchmark_results/wildclaw_similarity_task_selection_probe/
+*.env
+# runtime output of the launch scripts and the examples
+run/
+*.log
+# never commit model weights, traces or datasets
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.pth
+*.sqlite
+*.db
+*.nsys-rep
+*.trace.json.gz

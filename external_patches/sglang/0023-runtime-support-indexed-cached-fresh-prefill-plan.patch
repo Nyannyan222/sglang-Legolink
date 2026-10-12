@@ -1,0 +1,206 @@
+From eb2cda9e164c60d417be34a2f608bf0d89f6e637 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 23:09:25 +0800
+Subject: [PATCH 23/27] runtime: support indexed cached-fresh prefill plan
+
+EXPERIMENTAL, off unless SGLANG_PIC_EXPERIMENTAL_INDEXED_MIXED_PREFILL=1.
+
+A Link could only be laid out as prefix | block ... block | suffix: the
+mutable boundary was set once, after the last block, so fresh text between
+two cached chunks had no representation. The indexed exact sub-context path
+finds cached chunks wherever they sit in a query, so a request can be
+fresh | cached | fresh | cached | fresh.
+
+physical_interblock_fresh_token_counts carries one count per gap between
+consecutive blocks -- a count of host-owned tokens, like the prefix count.
+_prepare_link carves each gap off the Link input, appends it after its
+block and makes its positions recompute positions; every later block's
+start token, and so its RoPE delta, moves past it. Slots, positions and
+remap stay here. Refused without the flag, on a non-normalized layout,
+with group promotion, or when the gaps leave no mutable suffix.
+
+reserve_link_sources compared one matched handle per requested position
+with the number of distinct keys, so a query using one chunk at two places
+failed preflight; it now reserves and releases once per distinct block.
+The copy path already handled repeats.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 110 ++++++++++++++++++++++++++++++-
+ 1 file changed, 107 insertions(+), 3 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 0445fd6..6b89aae 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -686,6 +686,8 @@ PIC_LINK_TOKEN_LAYOUT_FIELDS = frozenset(
+         "physical_block_segments",
+         "expected_complete_token_count",
+         "expected_complete_token_ids_sha256",
++        # EXPERIMENTAL, see `indexed_mixed_prefill_enabled`.
++        "physical_interblock_fresh_token_counts",
+     }
+ )
+ 
+@@ -766,6 +768,71 @@ def group_promotion_enabled() -> bool:
+     return _env_flag("SGLANG_PIC_EXPERIMENTAL_GROUP_PROMOTION", "0")
+ 
+ 
++def indexed_mixed_prefill_enabled() -> bool:
++    """EXPERIMENTAL. Whether a Link may carry fresh tokens *between* cached
++    blocks, not only before the first and after the last.
++
++    The indexed exact sub-context path finds cached chunks wherever they sit in
++    a query, so a request can be `fresh | cached | fresh | cached | fresh`. The
++    host sends only how many of its own tokens form each gap; which slots they
++    occupy, their positions, and the RoPE delta of every block after them stay
++    here. Off unless the deployment sets
++    SGLANG_PIC_EXPERIMENTAL_INDEXED_MIXED_PREFILL=1.
++    """
++
++    return _env_flag("SGLANG_PIC_EXPERIMENTAL_INDEXED_MIXED_PREFILL", "0")
++
++
++def _split_interblock_fresh_tokens(
++    link_plan: dict[str, Any],
++    post_prefix_input_ids: list[int],
++    block_count: int,
++) -> tuple[list[list[int]], list[int]]:
++    """Carve the host's fresh gaps off the front of the post-prefix Link input.
++
++    The Link input is every host-owned token in order: the fresh prefix, then
++    the fresh run after block 0, after block 1, ..., then the mutable suffix.
++    `physical_interblock_fresh_token_counts` says how long each between-block
++    run is. Without the field every run is empty, which is the layout this
++    runtime always had.
++    """
++
++    raw = link_plan.get("physical_interblock_fresh_token_counts")
++    if raw is None:
++        return [[] for _ in range(max(block_count - 1, 0))], list(post_prefix_input_ids)
++    if not indexed_mixed_prefill_enabled():
++        raise PICRuntimeError(
++            "pic_link.physical_interblock_fresh_token_counts is experimental; "
++            "set SGLANG_PIC_EXPERIMENTAL_INDEXED_MIXED_PREFILL=1 to allow fresh "
++            "tokens between cached blocks."
++        )
++    if (
++        not isinstance(raw, list)
++        or len(raw) != block_count - 1
++        or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in raw)
++    ):
++        raise PICRuntimeError(
++            "pic_link.physical_interblock_fresh_token_counts must hold one "
++            "non-negative token count between each pair of consecutive blocks."
++        )
++    if link_plan.get("promote_reconstructed_group") and any(raw):
++        raise PICRuntimeError(
++            "A Link with fresh tokens between cached blocks is not an execution "
++            "group and cannot be promoted as one."
++        )
++    runs: list[list[int]] = []
++    cursor = 0
++    for count in raw:
++        runs.append(list(post_prefix_input_ids[cursor : cursor + count]))
++        cursor += count
++    if cursor >= len(post_prefix_input_ids):
++        raise PICRuntimeError(
++            "pic_link.physical_interblock_fresh_token_counts must leave a "
++            "non-empty mutable suffix."
++        )
++    return runs, list(post_prefix_input_ids[cursor:])
++
++
+ def legacy_link_fields_allowed() -> bool:
+     """Whether a host-sent physical field downgrades to a warning.
+ 
+@@ -2283,13 +2350,19 @@ class PICRequestTokenRegistry:
+             )
+ 
+         handles = list(getattr(lookup_result, "matched_handles", []))
+-        if len(handles) != len(dict.fromkeys(cache_keys)):
++        # The lookup returns one handle per requested *position*. A cache key
++        # that appears twice -- the same chunk at two places in one query --
++        # is still one source block: reserved once and released once.
++        distinct_handles = list(
++            {str(handle.cache_key): handle for handle in handles}.values()
++        )
++        if len(distinct_handles) != len(dict.fromkeys(cache_keys)):
+             raise PICRuntimeError(
+                 "LegoLink source preflight did not return every requested "
+                 "semantic block."
+             )
+-        tree_cache.pin_legolink_blocks(handles)
+-        reserved = [str(handle.cache_key) for handle in handles]
++        tree_cache.pin_legolink_blocks(distinct_handles)
++        reserved = [str(handle.cache_key) for handle in distinct_handles]
+         allocator = getattr(tree_cache, "token_to_kv_pool_allocator", None)
+         available_size = getattr(allocator, "available_size", None)
+         capacity_evictable_size = getattr(tree_cache, "capacity_evictable_size", None)
+@@ -2417,11 +2490,22 @@ class PICRequestTokenRegistry:
+                     "metadata object per cache key."
+                 )
+             physical_block_segments = raw_block_segments
++            interblock_input_ids, mutable_suffix_input_ids = (
++                _split_interblock_fresh_tokens(
++                    link_plan, mutable_suffix_input_ids, len(cache_keys)
++                )
++            )
+         else:
++            if link_plan.get("physical_interblock_fresh_token_counts") is not None:
++                raise PICRuntimeError(
++                    "Fresh tokens between cached blocks require the normalized "
++                    "physical token layout."
++                )
+             prefix_count = 0
+             prefix_input_ids = []
+             mutable_suffix_input_ids = normalized_mutable_input_ids
+             physical_block_segments = []
++            interblock_input_ids = [[] for _ in range(max(len(cache_keys) - 1, 0))]
+         if host_recorder.enabled:
+             host_recorder.add_ns(
+                 "ordered_cache_key_construction",
+@@ -2472,6 +2556,7 @@ class PICRequestTokenRegistry:
+         block_ranges: list[dict[str, Any]] = []
+         recompute_positions: list[int] = list(range(len(prefix_input_ids)))
+         block_ids = link_plan.get("block_ids") or []
++        fresh_gap_ranges: list[dict[str, int]] = []
+ 
+         with (
+             _profile_range("LinkPlanBuild"),
+@@ -2544,6 +2629,24 @@ class PICRequestTokenRegistry:
+                     recompute_positions.extend(
+                         range(start, min(start + block_recompute_tokens, end))
+                     )
++                # EXPERIMENTAL indexed mixed prefill: host-owned fresh tokens
++                # between this block and the next. They are computed from
++                # scratch like the prefix and suffix, and every later block is
++                # placed -- and RoPE-remapped -- after them.
++                if (
++                    block_index < len(interblock_input_ids)
++                    and interblock_input_ids[block_index]
++                ):
++                    gap_start = len(full_input_ids)
++                    full_input_ids.extend(interblock_input_ids[block_index])
++                    recompute_positions.extend(range(gap_start, len(full_input_ids)))
++                    fresh_gap_ranges.append(
++                        {
++                            "after_block_index": block_index,
++                            "start_token": gap_start,
++                            "end_token": len(full_input_ids),
++                        }
++                    )
+ 
+         with host_recorder.span("input_ids_preparation"):
+             mutable_start_token = len(full_input_ids)
+@@ -2613,6 +2716,7 @@ class PICRequestTokenRegistry:
+             ),
+             physical_prefix_token_count=len(prefix_input_ids),
+             physical_token_ids_exact=normalized_layout,
++            fresh_gap_ranges=fresh_gap_ranges,
+             mutable_start_token=mutable_start_token,
+             total_token_count=len(full_input_ids),
+             legolink_k=recompute_initial_tokens,
+-- 
+2.51.0.windows.2
+

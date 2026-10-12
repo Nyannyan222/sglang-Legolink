@@ -1,0 +1,72 @@
+From ccaaccc8ac252f35e9c826ede145a77aecc4833d Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 27 Aug 2026 18:17:02 +0800
+Subject: [PATCH 03/27] Carry capacity degradation across execution units of
+ one request
+
+Found on hardware. Running the paged stack against a deliberately small 16 MiB
+FlashInfer workspace on RTX 5070 produced one request that alternated native and
+FlashInfer between execution units: the actual_backend guard kept the layers of
+a single unit consistent, but each unit built fresh sparse-repair metadata, so a
+later unit could plan on FlashInfer again after an earlier one had degraded.
+
+_run_batched_recompute now carries a per-request _request_capacity_degraded flag
+and forces every subsequent unit to native once any unit degrades. run_link
+resets it, so one degraded request cannot pin the rest of the server's lifetime
+on native.
+
+This does not make a degraded request contain zero FlashInfer work: a unit that
+completed before the overflow was observable has already run. Eliminating that
+would mean re-running the whole request natively at double the cost, for a
+request the publish gates reject anyway. The guarantee is that a degraded
+request is flagged and every unit after the first degradation runs native.
+
+Measured effect on the same workload: 7 FlashInfer + 3 native units before,
+1 FlashInfer + 4 native after.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 777e4c5..e482806 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -2214,6 +2214,7 @@ class PICRuntime:
+             default=0,
+         )
+         self._active_sparse_repair_batches = []
++        self._request_capacity_degraded = False
+         _emit_pic_trace(
+             "model_link_start",
+             phase="link",
+@@ -2736,6 +2737,16 @@ class PICRuntime:
+                         "hybrid_request_reason": hybrid_request_reason,
+                     }
+                 )
++            if getattr(self, "_request_capacity_degraded", False):
++                # An earlier execution unit of this request degraded on
++                # capacity. Finish the whole request on native attention rather
++                # than mixing operators between units, so the request is
++                # cleanly one configuration or the other.
++                extend_batch.pic_sparse_repair_metadata["actual_backend"] = "native"
++                extend_batch.pic_sparse_repair_metadata["selected_backend"] = "native"
++                extend_batch.pic_sparse_repair_metadata["decision_reason"] = (
++                    "request_already_capacity_degraded"
++                )
+             self._active_sparse_repair_batches.append(
+                 extend_batch.pic_sparse_repair_metadata
+             )
+@@ -2756,6 +2767,8 @@ class PICRuntime:
+                 if state_capture is not None:
+                     state_capture.close()
+                 raise
++            if extend_batch.pic_sparse_repair_metadata.get("capacity_degraded"):
++                self._request_capacity_degraded = True
+             if flashinfer_full_row_batching and unit[-1] == len(ranges) - 1:
+                 output = self._select_final_grouped_request_output(
+                     output, grouped_batch_size=len(unit)
+-- 
+2.51.0.windows.2
+

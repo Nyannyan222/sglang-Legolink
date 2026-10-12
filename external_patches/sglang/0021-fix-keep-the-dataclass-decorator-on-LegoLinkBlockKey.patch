@@ -1,0 +1,39 @@
+From 0ac0adc5bcd45cb8063b98e684184679572501f0 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 13:43:51 +0800
+Subject: [PATCH 21/27] fix: keep the dataclass decorator on LegoLinkBlockKey
+
+Inserting LegoLinkDuplicateRegistrationError above the class took its
+@dataclass(frozen=True) with it, so LegoLinkBlockKey.build raised
+"LegoLinkBlockKey() takes no arguments" at the first registration and the
+scheduler died. The source-string tests could not see a displaced decorator;
+the accompanying test parses the module instead.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/mem_cache/radix_cache.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/mem_cache/radix_cache.py b/python/sglang/srt/mem_cache/radix_cache.py
+index 8d3baf3..c4540d2 100644
+--- a/python/sglang/srt/mem_cache/radix_cache.py
++++ b/python/sglang/srt/mem_cache/radix_cache.py
+@@ -112,7 +112,6 @@ def _legolink_profile_range(name: str):
+                 torch.cuda.nvtx.range_pop()
+ 
+ 
+-@dataclass(frozen=True)
+ class LegoLinkDuplicateRegistrationError(ValueError):
+     """Two different reusable contents claim one cache key.
+ 
+@@ -123,6 +122,7 @@ class LegoLinkDuplicateRegistrationError(ValueError):
+     """
+ 
+ 
++@dataclass(frozen=True)
+ class LegoLinkBlockKey:
+     """Compatibility-qualified logical key for one reusable semantic block."""
+ 
+-- 
+2.51.0.windows.2
+

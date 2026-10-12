@@ -1,0 +1,89 @@
+From 764dd6faac79bce3f1f49691e999605b15dce1b3 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 14:32:35 +0800
+Subject: [PATCH 07/27] Emit the decode span around CUDA graph replay too
+
+forward_decode carries the only native_decode span, and graph replay does not
+go through it, so enabling CUDA graphs silently removed decode from the trace:
+the 2026-09-02 local graph run recorded 868 sampling events and zero
+native_decode_start, and its 22.81 s of link_decode could not be attributed.
+Decode instrumentation and the configuration worth running were mutually
+exclusive.
+
+The replay site now emits the same event names with the same fields, so
+existing tooling reads both, and both paths carry execution_path -- "eager" or
+"cuda_graph_replay" -- because a replayed step and an eager step are not the
+same cost and must not be summed as one.
+
+Only the decode phase is instrumented; the site also serves prefill replay, and
+native prefill has never had a span on either path.
+---
+ .../sglang/srt/model_executor/model_runner.py | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/python/sglang/srt/model_executor/model_runner.py b/python/sglang/srt/model_executor/model_runner.py
+index f144c25..25c4001 100644
+--- a/python/sglang/srt/model_executor/model_runner.py
++++ b/python/sglang/srt/model_executor/model_runner.py
+@@ -2969,6 +2969,10 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+             "batch_size": int(forward_batch.batch_size),
+             "input_token_count": int(forward_batch.input_ids.numel()),
+             "forward_mode": str(forward_batch.forward_mode),
++            # Named so a reader cannot mistake one path's cost for the other's.
++            # The same span is emitted around CUDA graph replay in
++            # _forward_raw, which is a different cost entirely.
++            "execution_path": "eager",
+         }
+         _emit_pic_trace("native_decode_start", **decode_metadata)
+         # Set extra arguments
+@@ -3290,6 +3294,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+         if can_run_graph:
+             from sglang.srt.pic_runtime import (
+                 _cuda_context_from_forward_batch,
++                _emit_pic_trace,
+                 _next_decode_iteration,
+                 _profile_range,
+                 _standalone_cuda_phase,
+@@ -3308,6 +3313,26 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+             decode_iteration = (
+                 _next_decode_iteration() if phase == "native_decode" else None
+             )
++            # forward_decode is not on this path, so without this the decode
++            # span disappears the moment CUDA graphs are enabled -- which is
++            # how the 2026-09-02 graph run produced a trace with zero
++            # native_decode_start events and no way to attribute its time.
++            # Same event names and same fields as the eager path, so existing
++            # tooling reads both; execution_path says which one it got.
++            decode_metadata = None
++            if phase == "native_decode":
++                started = time.perf_counter()
++                decode_metadata = {
++                    "phase": "decode",
++                    "call_id": f"{os.getpid()}-{time.perf_counter_ns()}",
++                    "rids": [str(rid) for rid in (forward_batch.rids or [])],
++                    "batch_size": int(forward_batch.batch_size),
++                    "input_token_count": int(forward_batch.input_ids.numel()),
++                    "forward_mode": str(forward_batch.forward_mode),
++                    "execution_path": "cuda_graph_replay",
++                    "decode_iteration": decode_iteration,
++                }
++                _emit_pic_trace("native_decode_start", **decode_metadata)
+             with _profile_range(
+                 "NativeDecode" if phase == "native_decode" else "NativePrefill",
+                 decode_iteration=decode_iteration,
+@@ -3324,6 +3349,12 @@ class ModelRunner(ModelRunnerKVCacheMixin):
+                     skip_attn_backend_init=skip_attn_backend_init,
+                     pp_proxy_tensors=pp_proxy_tensors,
+                 )
++            if decode_metadata is not None:
++                _emit_pic_trace(
++                    "native_decode_complete",
++                    **decode_metadata,
++                    duration_s=time.perf_counter() - started,
++                )
+             return ModelRunnerOutput(logits_output=ret, can_run_graph=can_run_graph)
+ 
+         # For MLP sync
+-- 
+2.51.0.windows.2
+

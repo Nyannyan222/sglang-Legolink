@@ -1,0 +1,49 @@
+From cbf0bf8ea0efabacad65898145ed1a2ba8af8628 Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Wed, 2 Sep 2026 16:01:00 +0800
+Subject: [PATCH 11/27] Ask the warmup for eight tokens so decode runs
+
+At max_tokens=1 the only token comes out of the prefill or Link forward and no
+decode step executes, leaving the decode attention kernels, the CUDA graph
+replay path and the sampler cold. SGLang's own warmup asks for eight for the
+same reason.
+
+The 2026-09-02 warmup asked for one. It halved the cold Compile and left the
+first real Link at 8.9 s, unchanged from no warmup at all, which sent the
+investigation after kernel specialization when the decode path had simply never
+been entered.
+---
+ python/sglang/srt/pic_runtime.py | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index fbd8a2d..52b278c 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -642,7 +642,13 @@ def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]
+         "model": model,
+         "messages": [{"role": "user", "content": _warmup_text(block_tokens)}],
+         "temperature": 0,
+-        "max_tokens": 1,
++        # Eight, the same count SGLang's own warmup uses, and for the same
++        # reason. At max_tokens=1 the only token comes out of the prefill or
++        # Link forward and no decode step ever runs, so the decode attention
++        # kernels, the CUDA graph replay path and the sampler stay cold. The
++        # 2026-09-02 warmup asked for one and left the first real Link at
++        # 8.9 s, unchanged.
++        "max_tokens": 8,
+         "extra_key": _WARMUP_CACHE_KEY,
+         "custom_labels": {
+             "prefill_unit_id": _WARMUP_CACHE_KEY,
+@@ -655,7 +661,7 @@ def legolink_warmup_payloads(model: str) -> tuple[dict[str, Any], dict[str, Any]
+         "model": model,
+         "messages": [{"role": "user", "content": "warmup query"}],
+         "temperature": 0,
+-        "max_tokens": 1,
++        "max_tokens": 8,
+         "pic_link": {
+             "request_id": "sglang-pic-warmup",
+             "task_id": "sglang-pic-warmup",
+-- 
+2.51.0.windows.2
+

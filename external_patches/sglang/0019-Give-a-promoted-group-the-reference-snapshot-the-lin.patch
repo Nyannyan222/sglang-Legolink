@@ -1,0 +1,51 @@
+From 6dd2137730a046389678fdc463ac5079b53e269b Mon Sep 17 00:00:00 2001
+From: Rou <shamay1030@gmail.com>
+Date: Thu, 10 Sep 2026 13:03:02 +0800
+Subject: [PATCH 19/27] Give a promoted group the reference snapshot the link
+ path reads
+
+register_legolink_block accepts snapshot=None, but the link path resolves a
+block's KV through its snapshot and raises "no runtime snapshot" without one.
+A promoted block now carries the same reference-mode handle
+rebind_reference_slots gives a compiled block: the cache-owned slots, marked
+ready, with the KV left in the pool.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ python/sglang/srt/pic_runtime.py | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/pic_runtime.py b/python/sglang/srt/pic_runtime.py
+index 1a58e15..17e369d 100644
+--- a/python/sglang/srt/pic_runtime.py
++++ b/python/sglang/srt/pic_runtime.py
+@@ -5160,6 +5160,17 @@ class PICRuntime:
+                 declared = link_plan.get(field)
+                 if declared is not None:
+                     compatibility[field] = str(declared)
++            # A registered block is read through its snapshot, so a promoted
++            # one needs the same reference-mode handle `rebind_reference_slots`
++            # gives a compiled block: the cache-owned slots, marked ready. The
++            # KV itself stays in the pool; the snapshot only says where.
++            snapshot = PICBlockSnapshot(
++                cache_key=group_key,
++                token_ids=tuple(group_token_ids),
++                storage_mode="reference",
++                source_slots=match_result.device_indices.long().clone(),
++                reference_ready=True,
++            )
+             metadata = tree_cache.register_legolink_block(
+                 cache_key=group_key,
+                 block_id=group_key,
+@@ -5169,7 +5180,7 @@ class PICRuntime:
+                 token_ids=tuple(group_token_ids),
+                 token_range=(0, token_count),
+                 kv_slots=match_result.device_indices,
+-                snapshot=None,
++                snapshot=snapshot,
+                 radix_node=match_result.last_device_node,
+                 recomputed_tokens=token_count,
+                 pinned=False,
+-- 
+2.51.0.windows.2
+
